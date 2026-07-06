@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Query Campaign Screener</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <aside class="side-panel">
+        <section class="brand-card">
+          <p class="eyebrow">UGC Query Top10</p>
+          <h1>Query 筛选</h1>
+          <p>输入 TextNet 缺资源 Query 池，输出最适合组织 UGC 活动的 Top10 搜索词。</p>
+        </section>
+
+        <section class="input-card">
+          <div class="input-heading">
+            <div>
+              <h2>输入 / 上传表格</h2>
+              <p>至少包含类目、Query、搜索需求量、资源量、国家/地区。</p>
+            </div>
+          </div>
+          <textarea
+            id="manualInput"
+            placeholder="可以粘贴完整表格，也可以一行一个 query"
+          ></textarea>
+          <div class="side-actions">
+            <label class="upload-button" for="fileInput">
+              <input id="fileInput" type="file" accept=".csv,.tsv,.txt" />
+              上传表格
+            </label>
+            <button id="runInputButton" type="button">运行</button>
+          </div>
+          <div class="threshold-control">
+            <span>活动阈值 <strong id="thresholdValue">60</strong></span>
+            <input id="thresholdInput" type="range" min="40" max="85" value="60" />
+          </div>
+        </section>
+
+        <section class="auth-card">
+          <div>
+            <h2>AI 语义分析</h2>
+            <p id="authStatus">未连接 Crate。请先连接 Crate，JSON 步骤会逐步调用 gemini_3f 完成。</p>
+          </div>
+          <div class="side-actions">
+            <button class="ghost" id="connectCrateButton" type="button">连接 Crate</button>
+            <button class="ghost" id="disconnectCrateButton" type="button">断开</button>
+            <span id="aiModeBadge">gemini_3f required</span>
+          </div>
+        </section>
+
+        <section class="run-card">
+          <div class="run-header">
+            <div>
+              <h2>筛选流程</h2>
+              <p id="runStatus">等待上传 query 表格。支持 CSV / TSV / TXT，字段里有 query 即可。</p>
+            </div>
+          </div>
+
+          <div class="progress-track" id="progressTrack">
+            <article class="progress-step waiting" data-step="upload">
+              <div class="step-index">01</div>
+              <div>
+                <h3>读取表格</h3>
+                <p>读取类目、Query、搜索需求量、资源量和国家/地区。</p>
+                <ul></ul>
+              </div>
+            </article>
+            <article class="progress-step waiting is-json-step" data-step="clean">
+              <div class="step-index">02</div>
+              <div>
+                <h3>清洗query <span class="json-badge">JSON</span></h3>
+                <p>只删除明显不可用数据、安全风险和无 UGC 空间 query，不做价值判断。</p>
+                <ul></ul>
+              </div>
+            </article>
+            <article class="progress-step waiting is-json-step" data-step="score">
+              <div class="step-index">03</div>
+              <div>
+                <h3>规则多维度打分 <span class="json-badge">JSON</span></h3>
+                <p>按核心价值 70% + 可执行性 30% 计算 campaign 潜力分。</p>
+                <ul></ul>
+              </div>
+            </article>
+            <article class="progress-step waiting is-json-step" data-step="classify">
+              <div class="step-index">04</div>
+              <div>
+                <h3>主题聚类 <span class="json-badge">JSON</span></h3>
+                <p>大于等于 70 分的 query 按 Topic 聚类，一个 Cluster 算一个 Campaign。</p>
+                <ul></ul>
+              </div>
+            </article>
+            <article class="progress-step waiting" data-step="top">
+              <div class="step-index">05</div>
+              <div>
+                <h3>输出Top 10 Query</h3>
+                <p>输出 Primary Query、Supporting Queries、聚类、评分和原因。</p>
+                <ul></ul>
+              </div>
+            </article>
+            <article class="progress-step waiting is-json-step" data-step="asset">
+              <div class="step-index">06</div>
+              <div>
+                <h3>Campaign标题输出 <span class="json-badge">JSON</span></h3>
+                <p>由 gemini_3f 为每个 Top10 Query 生成 3 条参考文案。</p>
+                <ul></ul>
+              </div>
+            </article>
+          </div>
+        </section>
+      </aside>
+
+      <section class="result-section">
+        <div class="result-header">
+          <div>
+            <p class="eyebrow">Result</p>
+            <h2>生成结果</h2>
+          </div>
+          <div class="result-actions">
+            <button class="ghost" id="qualifiedOnly" type="button">显示全部</button>
+            <button class="ghost" id="exportButton" type="button">导出 CSV</button>
+          </div>
+        </div>
+
+        <div class="metric-row">
+          <article>
+            <span>Scored Queries</span>
+            <strong id="totalCount">0</strong>
+          </article>
+          <article>
+            <span>强推</span>
+            <strong id="pushCount">0</strong>
+          </article>
+          <article>
+            <span>可测</span>
+            <strong id="testCount">0</strong>
+          </article>
+          <article>
+            <span>Top10</span>
+            <strong id="seedCount">0</strong>
+          </article>
+        </div>
+
+        <div id="resultList" class="result-list">
+          <div class="empty-state">跑完后右侧上半部分展示 Top10 query 表格，下方展示每个 query 的 3 条参考文案。</div>
+        </div>
+      </section>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
