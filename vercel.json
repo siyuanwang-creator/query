@@ -1,0 +1,13 @@
+{
+  "functions": {
+    "api/**/*.js": {
+      "maxDuration": 90
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/((?!api/).*)",
+      "destination": "/index.html"
+    }
+  ]
+}

@@ -50,14 +50,14 @@
             <span id="aiModeBadge">gemini_3f required</span>
           </div>
           <details class="api-settings">
-            <summary>公开网页 Crate 连接配置</summary>
+            <summary>Crate 连接配置（可选）</summary>
             <label>
               <span>Crate API Base</span>
-              <input id="crateApiBaseInput" type="url" placeholder="https://your-api.example.com/crate-api" />
+              <input id="crateApiBaseInput" type="url" placeholder="部署后默认使用 /api/crate-api" />
             </label>
             <label>
               <span>Approval Origin</span>
-              <input id="crateApprovalOriginInput" type="url" placeholder="https://your-approval-origin.example.com" />
+              <input id="crateApprovalOriginInput" type="url" placeholder="部署环境变量会自动填充" />
             </label>
             <button class="ghost" id="saveCrateSettingsButton" type="button">保存 Crate 配置</button>
           </details>

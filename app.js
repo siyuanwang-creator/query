@@ -431,7 +431,7 @@ function getSafetyScore(categoryKey, hasCelebrity, clarity) {
 function getDefaultCrateApiBase() {
   return window.APP_CONFIG?.CRATE_API_BASE || (window.location.protocol === "file:"
     ? "http://127.0.0.1:5180/crate-api"
-    : "");
+    : `${window.location.origin}/api/crate-api`);
 }
 
 function getDefaultCrateApprovalOrigin() {
@@ -475,6 +475,22 @@ function initializeCrateSettingsForm() {
   if (!els.crateApiBaseInput || !els.crateApprovalOriginInput) return;
   els.crateApiBaseInput.value = getCrateApiBase();
   els.crateApprovalOriginInput.value = getCrateApprovalOrigin();
+}
+
+async function hydrateCrateSettingsFromServer() {
+  if (window.location.protocol === "file:") return;
+  try {
+    const response = await fetch("/api/config", { headers: { "Accept": "application/json" } });
+    if (!response.ok) return;
+    const config = await response.json();
+    state.crateSettings = {
+      apiBase: state.crateSettings?.apiBase || config.crateApiBase || getDefaultCrateApiBase(),
+      approvalOrigin: state.crateSettings?.approvalOrigin || config.crateApprovalOrigin || getDefaultCrateApprovalOrigin(),
+    };
+    initializeCrateSettingsForm();
+  } catch {
+    // Static hosts do not have /api/config; the manual settings fields remain available.
+  }
 }
 
 function saveCrateSettingsFromForm() {
@@ -527,7 +543,7 @@ async function parseCrateResponse(response) {
 
 async function cratePublicFetch(path, body) {
   const apiBase = getCrateApiBase();
-  if (!apiBase) throw new Error("请先填写 Crate API Base。公开网页需要一个可访问的 Crate 代理地址。");
+  if (!apiBase) throw new Error("请先填写 Crate API Base，或部署动态 API 代理。");
   const response = await fetch(`${apiBase}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -566,7 +582,7 @@ async function getFreshCrateSession() {
 async function crateFetch(path, body) {
   const session = await getFreshCrateSession();
   const apiBase = getCrateApiBase();
-  if (!apiBase) throw new Error("请先填写 Crate API Base。公开网页需要一个可访问的 Crate 代理地址。");
+  if (!apiBase) throw new Error("请先填写 Crate API Base，或部署动态 API 代理。");
   const response = await fetch(`${apiBase}${path}`, {
     method: "POST",
     headers: {
@@ -2148,7 +2164,7 @@ function renderAuth() {
 
   const missingSettings = !getCrateApiBase() || !getCrateApprovalOrigin();
   els.authStatus.textContent = missingSettings
-    ? `未连接 Crate。公开网页需要先填写 Crate API Base 和 Approval Origin。`
+    ? `未连接 Crate。动态部署会自动读取连接配置；如果没有，请填写 Crate API Base 和 Approval Origin。`
     : `未连接 Crate。请先连接 Crate，JSON 步骤需要 ${AI_MODEL_LABEL} 执行。`;
   els.aiModeBadge.textContent = `${AI_MODEL_LABEL} required`;
   els.aiModeBadge.classList.remove("is-connected");
@@ -2891,7 +2907,12 @@ function getScoreFilterTitle() {
   return "70～79 分 query 明细";
 }
 
-initializeCrateSettingsForm();
-initializePromptConfigEditors();
-renderAuth();
-renderProgress();
+async function initializeApp() {
+  initializeCrateSettingsForm();
+  initializePromptConfigEditors();
+  await hydrateCrateSettingsFromServer();
+  renderAuth();
+  renderProgress();
+}
+
+initializeApp();

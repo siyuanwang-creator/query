@@ -10,7 +10,7 @@ A lightweight local web app for screening UGC campaign query candidates. It read
 - Campaign cluster output instead of single-query output
 - Query detail filters for `90+`, `80-89`, and `70-79`
 - Bilingual campaign title references
-- Configurable Crate API connection for public static pages
+- Dynamic Crate API proxy for hosted usage
 
 ## Run Locally
 
@@ -28,27 +28,46 @@ http://127.0.0.1:5180
 
 You can also open `index.html` directly. In that mode the frontend expects the proxy at `http://127.0.0.1:5180/crate-api`.
 
-## Public Page / GitHub Pages
+## Deploy as a Dynamic Website
 
-The frontend is static and can be hosted on GitHub Pages. A public static page cannot call a local `127.0.0.1` Crate proxy on another person's computer, so the page includes a **公开网页 Crate 连接配置** section.
+GitHub Pages only serves static files and cannot run the Crate proxy. For a shareable link that other people can use directly, deploy this repository to Vercel, Render, or another host that can run API/server code.
 
-Fill in:
+### Vercel
 
-- `Crate API Base`: a public HTTPS Crate API/proxy base, for example `https://your-api.example.com/crate-api`
-- `Approval Origin`: the Crate approval host used by the pairing flow
+This repository includes Vercel serverless API routes:
 
-The browser will save these values locally and use them for subsequent Gemini / Crate requests.
+- `/api/config`
+- `/api/crate-api/*`
+
+Set these environment variables in Vercel:
+
+- `CRATE_API_BASE`: the real Crate API base URL, for example `https://your-crate-api.example.com/api`
+- `CRATE_APPROVAL_ORIGIN`: the Crate approval host used by the pairing flow
+
+After deployment, users open the Vercel URL and use the app directly. The frontend calls `/api/crate-api`, and the serverless API forwards requests to Crate.
+
+### Local / Render-style Python Server
+
+The Python server also supports dynamic deployment. It serves the frontend and proxies Crate requests under `/crate-api`.
+
+Required environment variables:
+
+- `CRATE_API_BASE`
+- `CRATE_APPROVAL_ORIGIN`
+- `PORT` if your host provides one
 
 ## Configuration
 
-The backend reads:
+The backend/serverless API reads:
 
-- `CRATE_API_BASE`: API base URL used by the local proxy.
+- `CRATE_API_BASE`: API base URL used by the proxy.
+- `CRATE_APPROVAL_ORIGIN`: approval origin for the pairing flow.
 
 The frontend reads:
 
-- `window.APP_CONFIG.CRATE_API_BASE`: optional default Crate API/proxy base for hosted pages.
-- `window.APP_CONFIG.CRATE_APPROVAL_ORIGIN`: approval origin for the pairing flow.
+- `/api/config`: dynamic deployment config.
+- `window.APP_CONFIG.CRATE_API_BASE`: optional local override.
+- `window.APP_CONFIG.CRATE_APPROVAL_ORIGIN`: optional local override.
 
 For local customization, create a `config.local.js` file and load it before `app.js` if needed:
 
@@ -63,4 +82,4 @@ window.APP_CONFIG = {
 
 ## Notes
 
-This project is designed as a local prototype. Review any model/API provider settings before deploying publicly.
+Keep private credentials in deployment environment variables. Do not hard-code tokens or Crate secrets in frontend files.
