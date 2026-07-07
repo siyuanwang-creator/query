@@ -156,6 +156,7 @@ const GEMINI_BATCH_SIZE = 20;
 const DEFAULT_AI_MODEL_ID = "gemini-2.5-pro";
 let AI_MODEL_ID = window.APP_CONFIG?.CRATE_MODEL_ID || DEFAULT_AI_MODEL_ID;
 let AI_MODEL_LABEL = AI_MODEL_ID;
+const TEST_ACTION_SCORE = 60;
 const RULE_FALLBACK_LABEL = "本地规则";
 const PROMPT_CONFIG_STORAGE_KEY = "query-screener.prompt-config.v2";
 
@@ -272,7 +273,6 @@ const state = {
   aiFallback: false,
   aiEnhanced: false,
   scoreFilter: "all",
-  threshold: 60,
   runId: 0,
   running: false,
   authorizing: false,
@@ -301,8 +301,6 @@ const els = {
   titlePromptConfig: document.querySelector("#titlePromptConfig"),
   resetPromptConfigButton: document.querySelector("#resetPromptConfigButton"),
   promptConfigStatus: document.querySelector("#promptConfigStatus"),
-  thresholdInput: document.querySelector("#thresholdInput"),
-  thresholdValue: document.querySelector("#thresholdValue"),
   exportButton: document.querySelector("#exportButton"),
   runStatus: document.querySelector("#runStatus"),
   progressTrack: document.querySelector("#progressTrack"),
@@ -845,7 +843,7 @@ function scoreQuery(row, stats = null) {
     + brandSafetyScore * 0.1,
   );
   const priority = clamp(baseOpportunityScore * 20 - riskPenalty * 0.35);
-  const action = priority >= 80 ? "强推" : priority >= state.threshold ? "可测" : priority >= 40 ? "观察" : "剔除";
+  const action = priority >= 80 ? "强推" : priority >= TEST_ACTION_SCORE ? "可测" : priority >= 40 ? "观察" : "剔除";
   const hasCampaignMeaning = action === "强推" || action === "可测";
   const topic = getTopic(row);
 
@@ -2171,11 +2169,6 @@ async function runScreening(rows) {
   render();
 }
 
-function rerunCurrentRows() {
-  const sourceRows = state.rows.length ? state.rows : state.parsedRows;
-  if (sourceRows.length) runScreening(sourceRows);
-}
-
 function setActiveStep(step, message) {
   state.activeStep = step;
   els.runStatus.textContent = message;
@@ -2322,7 +2315,7 @@ function buildProgressSteps() {
   const riskCount = state.results.filter((item) => item.risk !== "低风险").length;
   const topQueries = getTopQueries(qualified.length ? qualified : state.results, 10);
   const scoreStep = {
-    summary: `${scoringLabel} 最终平均优先级 ${avgPriority} 分，当前阈值 ${state.threshold} 分。`,
+    summary: `${scoringLabel} 最终平均优先级 ${avgPriority} 分。`,
     items: [
       "核心价值 70%：User Need 25 / Content Gap 20 / UGC Potential 20 / Trend 5",
       "可执行性 30%：Campaign Intent 10 / Expansion Potential 10 / Brand Safety 10",
@@ -2858,7 +2851,7 @@ function getActionClass(action) {
 
 function getActionFromPriority(priority) {
   if (priority >= 80) return "强推";
-  if (priority >= state.threshold) return "可测";
+  if (priority >= TEST_ACTION_SCORE) return "可测";
   if (priority >= 40) return "观察";
   return "剔除";
 }
@@ -2932,11 +2925,6 @@ els.disconnectCrateButton.addEventListener("click", () => {
 });
 els.saveCrateSettingsButton.addEventListener("click", saveCrateSettingsFromForm);
 
-els.thresholdInput.addEventListener("input", (event) => {
-  state.threshold = Number(event.target.value);
-  els.thresholdValue.textContent = state.threshold;
-  rerunCurrentRows();
-});
 els.resetPromptConfigButton.addEventListener("click", () => {
   resetPromptConfigEditors();
   render();

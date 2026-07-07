@@ -289,23 +289,11 @@ textarea::placeholder {
   margin-bottom: 0;
 }
 
-.threshold-control {
-  display: grid;
-  gap: 8px;
-  margin-top: 12px;
-  color: var(--muted);
-  font-size: 13px;
-}
-
 .side-actions {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 8px;
   margin-top: 10px;
-}
-
-.threshold-control strong {
-  color: var(--green);
 }
 
 input[type="range"] {
@@ -927,10 +915,6 @@ input[type="range"] {
   .result-item {
     grid-template-columns: 1fr;
     display: grid;
-  }
-
-  .threshold-control {
-    min-width: 0;
   }
 
   .metric-row {
