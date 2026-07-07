@@ -12,7 +12,7 @@
         <section class="brand-card">
           <p class="eyebrow">UGC Query Top10</p>
           <h1>Query 筛选</h1>
-          <p>输入 TextNet 缺资源 Query 池，输出最适合组织 UGC 活动的 Top10 搜索词。</p>
+          <p>输入 TextNet 缺资源 Query 池，输出最适合组织 UGC 活动的 Top10 Campaign Cluster。</p>
         </section>
 
         <section class="input-card">
@@ -48,6 +48,35 @@
             <button class="ghost" id="connectCrateButton" type="button">连接 Crate</button>
             <button class="ghost" id="disconnectCrateButton" type="button">断开</button>
             <span id="aiModeBadge">gemini_3f required</span>
+          </div>
+        </section>
+
+        <section class="prompt-card">
+          <div class="input-heading">
+            <div>
+              <h2>Prompt JSON 配置</h2>
+              <p>运营可直接修改四个 JSON 步骤的判断标准；运行时按当前配置执行。</p>
+            </div>
+          </div>
+          <details class="prompt-editor" open>
+            <summary>清洗 Query</summary>
+            <textarea id="cleanPromptConfig" spellcheck="false"></textarea>
+          </details>
+          <details class="prompt-editor">
+            <summary>规则多维度打分</summary>
+            <textarea id="scorePromptConfig" spellcheck="false"></textarea>
+          </details>
+          <details class="prompt-editor">
+            <summary>主题聚类</summary>
+            <textarea id="clusterPromptConfig" spellcheck="false"></textarea>
+          </details>
+          <details class="prompt-editor">
+            <summary>Campaign 标题输出</summary>
+            <textarea id="titlePromptConfig" spellcheck="false"></textarea>
+          </details>
+          <div class="side-actions">
+            <button class="ghost" id="resetPromptConfigButton" type="button">恢复默认 Prompt</button>
+            <span id="promptConfigStatus">JSON 会自动保存</span>
           </div>
         </section>
 
@@ -88,7 +117,7 @@
               <div class="step-index">04</div>
               <div>
                 <h3>主题聚类 <span class="json-badge">JSON</span></h3>
-                <p>大于等于 70 分的 query 按 Topic 聚类，一个 Cluster 算一个 Campaign。</p>
+                <p>大于等于 70 分的 query 按 Campaign 大类聚类，例如酒店、攻略、体验项目。</p>
                 <ul></ul>
               </div>
             </article>
@@ -104,7 +133,7 @@
               <div class="step-index">06</div>
               <div>
                 <h3>Campaign标题输出 <span class="json-badge">JSON</span></h3>
-                <p>由 gemini_3f 为每个 Top10 Query 生成 3 条参考文案。</p>
+                <p>由 gemini_3f 为每个 Top10 Campaign Cluster 生成 3 条参考文案。</p>
                 <ul></ul>
               </div>
             </article>
@@ -119,7 +148,6 @@
             <h2>生成结果</h2>
           </div>
           <div class="result-actions">
-            <button class="ghost" id="qualifiedOnly" type="button">显示全部</button>
             <button class="ghost" id="exportButton" type="button">导出 CSV</button>
           </div>
         </div>
@@ -138,13 +166,13 @@
             <strong id="testCount">0</strong>
           </article>
           <article>
-            <span>Top10</span>
-            <strong id="seedCount">0</strong>
+            <span>聚类</span>
+            <strong id="clusterCount">0</strong>
           </article>
         </div>
 
         <div id="resultList" class="result-list">
-          <div class="empty-state">跑完后右侧上半部分展示 Top10 query 表格，下方展示每个 query 的 3 条参考文案。</div>
+          <div class="empty-state">跑完后右侧上半部分展示 Top10 Campaign Cluster 表格，下方展示每个 cluster 的 3 条参考文案。</div>
         </div>
       </section>
     </main>

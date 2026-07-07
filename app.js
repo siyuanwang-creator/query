@@ -120,6 +120,13 @@ const patterns = {
   transport: ["parking", "location", "map", "shuttle", "distance", "near"],
   experience: ["pool", "package", "winter wonderland", "drone pov", "tour", "guide", "climbing"],
   celebrity: ["ariana", "grande", "cardi", "jlo", "latto", "kehlani", "offset", "disneyland"],
+  entertainmentConsume: [
+    "celebrity", "star", "actor", "actress", "singer", "idol", "rapper", "influencer",
+    "reality show", "tv show", "variety show", "drama", "series", "episode", "season", "cast",
+    "news", "gossip", "rumor", "tea", "scandal", "dating", "breakup", "divorce", "beef",
+    "明星", "艺人", "演员", "歌手", "偶像", "爱豆", "网红", "综艺", "真人秀", "电视剧", "剧集", "剧", "节目",
+    "新闻", "爆料", "八卦", "吃瓜", "绯闻", "恋情", "分手", "离婚", "塌房", "瓜",
+  ],
   lowQuality: ["part 2", "p2", "dont check", "bed time", "bad breath", "installed", "hugged"],
   safetyBlocked: [
     "porn", "porno", "xxx", "nude", "naked", "sex", "escort", "onlyfans",
@@ -139,18 +146,121 @@ const patterns = {
   ],
 };
 
-const CRATE_API_BASE = window.location.protocol === "file:"
+const CRATE_API_BASE = window.APP_CONFIG?.CRATE_API_BASE || (window.location.protocol === "file:"
   ? "http://127.0.0.1:5180/crate-api"
-  : "/crate-api";
-const CRATE_APPROVAL_ORIGIN = "https://crate-staging.tiktok-row.net";
+  : "/crate-api");
+const CRATE_APPROVAL_ORIGIN = window.APP_CONFIG?.CRATE_APPROVAL_ORIGIN || "https://example.com";
 const CRATE_CLIENT_NAME = "query-campaign-screener";
 const CRATE_SESSION_KEY = "query-screener.crate.session.v1";
 const CRATE_REFRESH_AHEAD_MS = 5 * 60 * 1000;
 const CRATE_PAIR_TIMEOUT_MS = 5 * 60 * 1000;
 const GEMINI_REQUEST_TIMEOUT_MS = 90 * 1000;
+const GEMINI_BATCH_SIZE = 20;
 const AI_MODEL_ID = "gemini_3f";
 const AI_MODEL_LABEL = "gemini_3f";
 const RULE_FALLBACK_LABEL = "本地规则";
+const PROMPT_CONFIG_STORAGE_KEY = "query-screener.prompt-config.v2";
+
+const DEFAULT_PROMPT_CONFIG = {
+  clean: {
+    role: "你负责清洗 UGC campaign query 输入。只做硬过滤，不做价值判断。",
+    instructions: [
+      "保留有潜在语义的 query；删除明显不能用的数据。",
+      "删除数据质量问题：空值、重复 Query、乱码、超长字符串、特殊字符占比过高、无法识别语言、无意义字符。",
+      "删除风险内容：色情、暴力、赌博、毒品、仇恨言论、极端政治、未成年人敏感内容、医疗误导、违法内容。",
+      "删除基本没有 UGC 空间的 query：导航型 Query、唯一答案 Query、品牌客服、工具搜索、下载入口。",
+      "删除明星、艺人、偶像、综艺、剧集相关的 Consume 型 query，例如看新闻、吃瓜、八卦、爆料、绯闻、恋情、分手、剧情讨论、演员/嘉宾信息；这类不进入 UGC campaign 池。",
+    ],
+    schema: {
+      keptRows: [{ id: 1, query: "清洗后的 query", reason: "保留原因" }],
+      removedRows: [{ id: 2, query: "原 query", reason: "删除原因" }],
+      summary: "清洗总结",
+    },
+  },
+  score: {
+    role: "你负责给每个 query 计算 campaign 潜力分。必须逐条打分，不做聚类。",
+    instructions: [
+      "每个维度都用 0-100 分制。finalScore 也为 0-100，opportunityScore 为 1-5。",
+      "Campaign Intent 关注是否适合 Challenge / Checklist / Template / Vote / Showcase / Transformation 等互动。",
+      "Expansion Potential 关注是否能扩展 Packing / Playlist / Food / Route / Friends / Pets 等玩法。",
+      "finalScore 需要按 dimensions 中的 weight 加权计算；decision 输出强推/可测/观察/剔除。",
+    ],
+    dimensions: [
+      { key: "userNeedScore", label: "User Need", weight: 25, description: "用户需求是否真实、明确、可被内容满足。" },
+      { key: "contentGapScore", label: "Content Gap", weight: 20, description: "平台现有内容是否不足；gap 越大越值得做。" },
+      { key: "ugcPotentialScore", label: "UGC Potential", weight: 20, description: "用户是否愿意拍摄、分享、展示或参与。" },
+      { key: "trendMomentumScore", label: "Trend Momentum", weight: 5, description: "是否有上升趋势；避免已经过气。" },
+      { key: "campaignIntentScore", label: "Campaign Intent", weight: 10, description: "是否适合 Challenge / Checklist / Template / Vote / Showcase / Transformation 等互动。" },
+      { key: "expansionPotentialScore", label: "Expansion Potential", weight: 10, description: "能否扩展出 Packing / Playlist / Food / Route / Friends / Pets 等玩法。" },
+      { key: "brandSafetyScore", label: "Brand Safety", weight: 10, description: "品牌安全，不容易翻车。" },
+    ],
+    schema: {
+      scores: [{
+        id: 1,
+        query: "query",
+        domain: "垂类",
+        intent: "意图",
+        topic: "粗 Topic",
+        dimensionScores: {
+          userNeedScore: 0,
+          contentGapScore: 0,
+          ugcPotentialScore: 0,
+          trendMomentumScore: 0,
+          campaignIntentScore: 0,
+          expansionPotentialScore: 0,
+          brandSafetyScore: 0,
+        },
+        opportunityScore: 0,
+        finalScore: 0,
+        decision: "强推/可测/观察/剔除",
+        reason: "打分原因",
+      }],
+      summary: "打分总结",
+    },
+  },
+  cluster: {
+    role: "你负责主题聚类。只处理 >=70 分的 query。",
+    instructions: [
+      "聚类只需要 Campaign 大类，不要分得很细；一个大类 Cluster 算一个 Campaign。",
+      "优先使用这些大类名称：酒店住宿、旅行攻略、美食探店、出行交通、体验项目、购物生活、美妆穿搭、家居生活、运动健康、学习教育、兴趣爱好、其他。",
+      "例如 hotel booking / cheap hotel / luxury hotel / island villa / themed hotel 都归入「酒店住宿」，不要拆成 Luxury Hotel、Island Villa、Themed Hotel 等细类。",
+      "例如 things to do / itinerary / route / destination guide 归入「旅行攻略」。",
+      "每个大类里最高分作为 primaryQuery，其余作为 supportingQueries。",
+    ],
+    schema: {
+      clusters: [{
+        campaignCluster: "聚类名称",
+        primaryId: 1,
+        primaryQuery: "主 query",
+        supportingIds: [2, 3],
+        supportingQueries: ["supporting query 1", "supporting query 2"],
+        reason: "聚类原因",
+      }],
+      summary: "聚类总结",
+    },
+  },
+  title: {
+    role: "你负责为 Top10 Campaign 生成标题文案。",
+    instructions: [
+      "重要：文案必须基于整个 campaignCluster / Campaign 聚类来写，不要只基于 primaryQuery 本身。primaryQuery 只是这个聚类的代表词，supportingQueries 是同一 Campaign 的语义边界。",
+      "每个 Campaign 输出 3 条参考文案，必须覆盖这个聚类的共同主题和可参与玩法，不能写成单个搜索词解释。",
+      "必须中英文双语，英文在前、中文在后，适合 UGC 活动。",
+      "每条文案必须包含 type、titleEn、titleZh、requirementEn、requirementZh。英文要自然像真实 campaign title，中文要对应英文含义。",
+    ],
+    schema: {
+      campaigns: [{
+        id: 1,
+        campaignDirection: "活动方向",
+        campaignTitles: [
+          { type: "Challenge", titleEn: "English title 1", titleZh: "中文标题 1", requirementEn: "English submission requirement 1", requirementZh: "中文投稿要求 1" },
+          { type: "Showcase", titleEn: "English title 2", titleZh: "中文标题 2", requirementEn: "English submission requirement 2", requirementZh: "中文投稿要求 2" },
+          { type: "Checklist", titleEn: "English title 3", titleZh: "中文标题 3", requirementEn: "English submission requirement 3", requirementZh: "中文投稿要求 3" },
+        ],
+      }],
+      summary: "标题总结",
+    },
+  },
+};
 
 const state = {
   rows: [],
@@ -163,7 +273,7 @@ const state = {
   aiError: "",
   aiFallback: false,
   aiEnhanced: false,
-  qualifiedOnly: true,
+  scoreFilter: "90",
   threshold: 60,
   runId: 0,
   running: false,
@@ -183,9 +293,14 @@ const els = {
   disconnectCrateButton: document.querySelector("#disconnectCrateButton"),
   authStatus: document.querySelector("#authStatus"),
   aiModeBadge: document.querySelector("#aiModeBadge"),
+  cleanPromptConfig: document.querySelector("#cleanPromptConfig"),
+  scorePromptConfig: document.querySelector("#scorePromptConfig"),
+  clusterPromptConfig: document.querySelector("#clusterPromptConfig"),
+  titlePromptConfig: document.querySelector("#titlePromptConfig"),
+  resetPromptConfigButton: document.querySelector("#resetPromptConfigButton"),
+  promptConfigStatus: document.querySelector("#promptConfigStatus"),
   thresholdInput: document.querySelector("#thresholdInput"),
   thresholdValue: document.querySelector("#thresholdValue"),
-  qualifiedOnly: document.querySelector("#qualifiedOnly"),
   exportButton: document.querySelector("#exportButton"),
   runStatus: document.querySelector("#runStatus"),
   progressTrack: document.querySelector("#progressTrack"),
@@ -193,7 +308,14 @@ const els = {
   totalCount: document.querySelector("#totalCount"),
   pushCount: document.querySelector("#pushCount"),
   testCount: document.querySelector("#testCount"),
-  seedCount: document.querySelector("#seedCount"),
+  clusterCount: document.querySelector("#clusterCount"),
+};
+
+const promptEditorEls = {
+  clean: els.cleanPromptConfig,
+  score: els.scorePromptConfig,
+  cluster: els.clusterPromptConfig,
+  title: els.titlePromptConfig,
 };
 
 function normalize(value) {
@@ -747,9 +869,9 @@ function buildGeminiScreeningPrompt(candidates) {
     "5. 色情、暴力、赌博、毒品、仇恨、极端政治、未成年人敏感、医疗误导和违法内容不得进入结果。",
     "6. 导航型、唯一答案、品牌客服、工具搜索、下载入口等基本没有 UGC 空间的 query 不应进入结果。",
     "7. finalScore 满分 100，用于排序；同时每条 query 必须给 opportunityScore，范围 1-5，用于前端表格展示。",
-    "8. 大于等于 70 分的 query 按 Topic 聚类，例如 hotel booking / cheap hotel / hotel deals / luxury hotel 归入 Hotel Campaign。",
+    "8. 大于等于 70 分的 query 按 Campaign 大类聚类，例如酒店住宿、旅行攻略、美食探店、体验项目；不要拆得太细。",
     "9. 一个 Cluster 算一个 Campaign：最高分是 primaryQuery，其余同簇 query 是 supportingQueries。",
-    "10. 每条入选 query 的 campaignTitles 必须恰好 3 条，type、title、requirement 都用中文输出，title 要像真实活动标题。",
+    "10. 每条入选 query 的 campaignTitles 必须恰好 3 条，type、titleEn、titleZh、requirementEn、requirementZh 都要输出，英文在前，中文在后。",
     "11. 输出必须是 JSON，不要 Markdown，不要解释性前后缀。",
     "JSON schema:",
     JSON.stringify({
@@ -785,9 +907,9 @@ function buildGeminiScreeningPrompt(candidates) {
           seedWords: ["campaign seed word"],
           campaignDirection: "活动方向",
           campaignTitles: [
-            { type: "活动标题", title: "参考标题 1", requirement: "投稿要求或文案说明" },
-            { type: "活动标题", title: "参考标题 2", requirement: "投稿要求或文案说明" },
-            { type: "活动标题", title: "参考标题 3", requirement: "投稿要求或文案说明" },
+            { type: "Challenge", titleEn: "English title 1", titleZh: "中文标题 1", requirementEn: "English requirement 1", requirementZh: "中文投稿要求 1" },
+            { type: "Showcase", titleEn: "English title 2", titleZh: "中文标题 2", requirementEn: "English requirement 2", requirementZh: "中文投稿要求 2" },
+            { type: "Checklist", titleEn: "English title 3", titleZh: "中文标题 3", requirementEn: "English requirement 3", requirementZh: "中文投稿要求 3" },
           ],
         },
       ],
@@ -860,6 +982,119 @@ function buildGeminiInputRows(rows, limit = 120) {
   }));
 }
 
+function formatJson(value) {
+  return JSON.stringify(value, null, 2);
+}
+
+function readStoredPromptConfig() {
+  try {
+    const raw = window.localStorage.getItem(PROMPT_CONFIG_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+function savePromptConfigFromEditors() {
+  const nextConfig = {};
+  Object.entries(promptEditorEls).forEach(([key, editor]) => {
+    nextConfig[key] = JSON.parse(editor.value);
+  });
+  window.localStorage.setItem(PROMPT_CONFIG_STORAGE_KEY, JSON.stringify(nextConfig));
+  setPromptConfigStatus("JSON 已保存");
+}
+
+function initializePromptConfigEditors() {
+  const stored = readStoredPromptConfig();
+  Object.entries(promptEditorEls).forEach(([key, editor]) => {
+    editor.value = formatJson(stored[key] || DEFAULT_PROMPT_CONFIG[key]);
+    editor.addEventListener("input", () => {
+      try {
+        savePromptConfigFromEditors();
+      } catch {
+        setPromptConfigStatus("JSON 格式有误，请修正后运行");
+      }
+    });
+  });
+}
+
+function resetPromptConfigEditors() {
+  window.localStorage.removeItem(PROMPT_CONFIG_STORAGE_KEY);
+  Object.entries(promptEditorEls).forEach(([key, editor]) => {
+    editor.value = formatJson(DEFAULT_PROMPT_CONFIG[key]);
+  });
+  setPromptConfigStatus("已恢复默认 Prompt");
+}
+
+function setPromptConfigStatus(message) {
+  if (els.promptConfigStatus) els.promptConfigStatus.textContent = message;
+}
+
+function getPromptConfig(stepKey) {
+  const editor = promptEditorEls[stepKey];
+  if (!editor) throw new Error(`缺少 ${stepKey} prompt 配置区域。`);
+  try {
+    const config = JSON.parse(editor.value);
+    return { ...DEFAULT_PROMPT_CONFIG[stepKey], ...config };
+  } catch (error) {
+    throw new Error(`${getPromptStepLabel(stepKey)} Prompt JSON 格式错误：${error.message}`);
+  }
+}
+
+function getPromptStepLabel(stepKey) {
+  return {
+    clean: "清洗 Query",
+    score: "规则多维度打分",
+    cluster: "主题聚类",
+    title: "Campaign 标题输出",
+  }[stepKey] || stepKey;
+}
+
+function normalizeInstructions(config) {
+  if (Array.isArray(config.instructions)) return config.instructions.map(normalize).filter(Boolean);
+  return normalize(config.instructions) ? [normalize(config.instructions)] : [];
+}
+
+function buildPromptFromConfig(config, schema, dataLabel, data) {
+  return [
+    normalize(config.role),
+    ...normalizeInstructions(config),
+    "输出 JSON，不要 Markdown。schema:",
+    JSON.stringify(schema),
+    dataLabel,
+    JSON.stringify(data, null, 2),
+  ].filter(Boolean).join("\n");
+}
+
+function getScoreDimensionsConfig(useFallback = false) {
+  try {
+    const dimensions = getPromptConfig("score").dimensions;
+    return Array.isArray(dimensions) && dimensions.length
+      ? dimensions
+      : DEFAULT_PROMPT_CONFIG.score.dimensions;
+  } catch (error) {
+    if (useFallback) return DEFAULT_PROMPT_CONFIG.score.dimensions;
+    throw error;
+  }
+}
+
+function buildScoreSchema(config) {
+  const baseScore = Array.isArray(config.schema?.scores) && config.schema.scores[0]
+    ? config.schema.scores[0]
+    : DEFAULT_PROMPT_CONFIG.score.schema.scores[0];
+  const dimensionScores = getScoreDimensionsConfig().reduce((scores, dimension) => {
+    scores[dimension.key] = 0;
+    return scores;
+  }, {});
+  return {
+    ...config.schema,
+    scores: [{
+      ...baseScore,
+      dimensionScores,
+    }],
+  };
+}
+
 async function runGeminiJsonStep(stepName, prompt, timeoutMs = GEMINI_REQUEST_TIMEOUT_MS) {
   const response = await withTimeout(
     crateFetch("/openapi/v1/generation/image", {
@@ -876,117 +1111,136 @@ async function runGeminiJsonStep(stepName, prompt, timeoutMs = GEMINI_REQUEST_TI
 }
 
 function buildGeminiCleanPrompt(rows) {
-  return [
-    "你负责清洗 UGC campaign query 输入。只做硬过滤，不做价值判断。",
-    "保留有潜在语义的 query；删除明显不能用的数据。",
-    "删除数据质量问题：空值、重复 Query、乱码、超长字符串、特殊字符占比过高、无法识别语言、无意义字符。",
-    "删除风险内容：色情、暴力、赌博、毒品、仇恨言论、极端政治、未成年人敏感内容、医疗误导、违法内容。",
-    "删除基本没有 UGC 空间的 query：导航型 Query、唯一答案 Query、品牌客服、工具搜索、下载入口。",
-    "输出 JSON，不要 Markdown。schema:",
-    JSON.stringify({
-      keptRows: [{ id: 1, query: "清洗后的 query", reason: "保留原因" }],
-      removedRows: [{ id: 2, query: "原 query", reason: "删除原因" }],
-      summary: "清洗总结",
-    }),
+  const config = getPromptConfig("clean");
+  return buildPromptFromConfig(
+    config,
+    config.schema || DEFAULT_PROMPT_CONFIG.clean.schema,
     "输入 rows:",
-    JSON.stringify(buildGeminiInputRows(rows, 160), null, 2),
-  ].join("\n");
+    buildGeminiInputRows(rows, rows.length),
+  );
 }
 
-async function runGeminiCleanRows(rows) {
+async function runGeminiCleanRows(rows, onProgress = null) {
   const sourceRows = rows.map((row, index) => ({ ...row, __rowId: index + 1, query: sanitizeQuery(row.query) }));
-  const result = await runGeminiJsonStep("清洗 query", buildGeminiCleanPrompt(sourceRows));
-  const cleanQueryById = new Map((result.keptRows || []).map((item) => [Number(item.id), sanitizeQuery(item.query)]));
-  const kept = sourceRows
-    .filter((row) => cleanQueryById.has(Number(row.__rowId)))
-    .map((row) => ({ ...row, query: cleanQueryById.get(Number(row.__rowId)) || row.query }))
-    .slice(0, 120);
+  const chunks = chunkRows(sourceRows);
+  const kept = [];
+  const summaries = [];
+  const seen = new Set();
+
+  for (const [index, chunk] of chunks.entries()) {
+    onProgress?.(index + 1, chunks.length);
+    const result = await runGeminiJsonStep(`清洗 query ${index + 1}/${chunks.length}`, buildGeminiCleanPrompt(chunk));
+    summaries.push(result.summary || "");
+    const cleanQueryById = new Map((result.keptRows || []).map((item) => [Number(item.id), sanitizeQuery(item.query)]));
+    chunk.forEach((row) => {
+      if (!cleanQueryById.has(Number(row.__rowId))) return;
+      const query = cleanQueryById.get(Number(row.__rowId)) || row.query;
+      if (isInvalidQuery(query)) return;
+      const key = query.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      kept.push({ ...row, query });
+    });
+  }
+
   return {
     rows: kept,
     kept: kept.length,
     removed: Math.max(0, sourceRows.length - kept.length),
-    summary: result.summary || "",
+    summary: joinStepSummaries(summaries),
   };
 }
 
 function buildGeminiScorePrompt(rows) {
-  return [
-    "你负责给每个 query 计算 campaign 潜力分。必须逐条打分，不做聚类。",
-    "评分权重：核心价值 70% = User Need 25% + Content Gap 20% + UGC Potential 20% + Trend Momentum 5%；可执行性 30% = Campaign Intent 10% + Expansion Potential 10% + Brand Safety 10%。",
-    "每个维度 1-5 分。finalScore 为 0-100，opportunityScore 为 1-5。",
-    "Campaign Intent 关注是否适合 Challenge / Checklist / Template / Vote / Showcase / Transformation 等互动。",
-    "Expansion Potential 关注是否能扩展 Packing / Playlist / Food / Route / Friends / Pets 等玩法。",
-    "输出 JSON，不要 Markdown。schema:",
-    JSON.stringify({
-      scores: [{
-        id: 1,
-        query: "query",
-        domain: "垂类",
-        intent: "意图",
-        topic: "粗 Topic",
-        userNeedScore: 0,
-        contentGapScore: 0,
-        ugcPotentialScore: 0,
-        trendMomentumScore: 0,
-        campaignIntentScore: 0,
-        expansionPotentialScore: 0,
-        brandSafetyScore: 0,
-        opportunityScore: 0,
-        finalScore: 0,
-        decision: "强推/可测/观察/剔除",
-        reason: "打分原因",
-      }],
-      summary: "打分总结",
-    }),
+  const config = getPromptConfig("score");
+  const dimensions = getScoreDimensionsConfig();
+  const dimensionLines = dimensions.map((dimension) => (
+    `${dimension.key} / ${dimension.label} / weight ${dimension.weight}: ${dimension.description || ""}`
+  ));
+  return buildPromptFromConfig(
+    {
+      ...config,
+      instructions: [
+        ...normalizeInstructions(config),
+        "当前打分维度如下；如果运营改了 dimensions，就严格按新的 dimensions 输出 dimensionScores：",
+        ...dimensionLines,
+      ],
+    },
+    buildScoreSchema(config),
     "输入 rows:",
-    JSON.stringify(buildGeminiInputRows(rows, 120), null, 2),
-  ].join("\n");
+    buildGeminiInputRows(rows, rows.length),
+  );
 }
 
-async function runGeminiScoreRows(rows) {
-  const result = await runGeminiJsonStep("规则多维度打分", buildGeminiScorePrompt(rows));
-  const scoresById = new Map((result.scores || []).map((item) => [Number(item.id), item]));
-  const scored = rows.map((row) => {
-    const note = scoresById.get(Number(row.__rowId));
-    if (!note) throw new Error(`${AI_MODEL_LABEL} 打分结果缺少 query id ${row.__rowId}`);
-    const finalScore = clamp(Number(note.finalScore ?? 0));
-    const opportunityScore = roundOne(Number(note.opportunityScore ?? finalScore / 20));
-    const action = normalize(note.decision) || getActionFromPriority(finalScore);
-    return {
-      ...scoreQuery(row),
-      query: normalize(note.query) || row.query,
-      domain: normalize(note.domain) || classifyDomain(row, row.query, classifyQuery(row.query, row)),
-      intent: normalize(note.intent) || "",
-      topic: normalize(note.topic) || getTopic(row).label,
-      demandScore: clamp(Number(note.userNeedScore ?? note.demandScore ?? 0), 1, 5),
-      userNeedScore: clamp(Number(note.userNeedScore ?? note.demandScore ?? 0), 1, 5),
-      contentGapScore: clamp(Number(note.contentGapScore ?? 0), 1, 5),
-      gapScore: clamp(Number(note.contentGapScore ?? 0), 1, 5),
-      ugcPotentialScore: clamp(Number(note.ugcPotentialScore ?? 0), 1, 5),
-      productionScore: clamp(Number(note.ugcPotentialScore ?? 0), 1, 5),
-      trendMomentumScore: clamp(Number(note.trendMomentumScore ?? 0), 1, 5),
-      campaignIntentScore: clamp(Number(note.campaignIntentScore ?? 0), 1, 5),
-      expansionPotentialScore: clamp(Number(note.expansionPotentialScore ?? 0), 1, 5),
-      expansionScore: clamp(Number(note.expansionPotentialScore ?? 0), 1, 5),
-      brandSafetyScore: clamp(Number(note.brandSafetyScore ?? 0), 1, 5),
-      safetyScore: clamp(Number(note.brandSafetyScore ?? 0), 1, 5),
-      baseOpportunityScore: opportunityScore,
-      finalOpportunityScore: opportunityScore,
-      priority: finalScore,
-      action,
-      hasCampaignMeaning: action === "强推" || action === "可测",
-      reason: normalize(note.reason) || "",
-      riskScore: clamp(100 - Number(note.brandSafetyScore ?? 0) * 20),
-      scoredBy: AI_MODEL_LABEL,
-    };
-  });
-  return { rows: scored.sort(sortByQueryPriority), summary: result.summary || "" };
+function applyGeminiScore(row, note) {
+  const finalScore = clamp(Number(note.finalScore ?? 0));
+  const opportunityScore = roundOne(Number(note.opportunityScore ?? finalScore / 20));
+  const action = normalize(note.decision) || getActionFromPriority(finalScore);
+  const rawDimensionScores = note.dimensionScores && typeof note.dimensionScores === "object" ? note.dimensionScores : {};
+  const dimensionScores = getScoreDimensionsConfig().reduce((scores, dimension) => {
+    scores[dimension.key] = normalizeDimensionScore(rawDimensionScores[dimension.key] ?? note[dimension.key]);
+    return scores;
+  }, {});
+  const userNeedScore = normalizeDimensionScore(dimensionScores.userNeedScore ?? note.userNeedScore ?? note.demandScore);
+  const contentGapScore = normalizeDimensionScore(dimensionScores.contentGapScore ?? note.contentGapScore);
+  const ugcPotentialScore = normalizeDimensionScore(dimensionScores.ugcPotentialScore ?? note.ugcPotentialScore);
+  const trendMomentumScore = normalizeDimensionScore(dimensionScores.trendMomentumScore ?? note.trendMomentumScore);
+  const campaignIntentScore = normalizeDimensionScore(dimensionScores.campaignIntentScore ?? note.campaignIntentScore);
+  const expansionPotentialScore = normalizeDimensionScore(dimensionScores.expansionPotentialScore ?? note.expansionPotentialScore);
+  const brandSafetyScore = normalizeDimensionScore(dimensionScores.brandSafetyScore ?? note.brandSafetyScore);
+  return {
+    ...scoreQuery(row),
+    query: normalize(note.query) || row.query,
+    domain: normalize(note.domain) || classifyDomain(row, row.query, classifyQuery(row.query, row)),
+    intent: normalize(note.intent) || "",
+    topic: normalize(note.topic) || getTopic(row).label,
+    demandScore: userNeedScore,
+    userNeedScore,
+    contentGapScore,
+    gapScore: contentGapScore,
+    ugcPotentialScore,
+    productionScore: ugcPotentialScore,
+    trendMomentumScore,
+    campaignIntentScore,
+    expansionPotentialScore,
+    expansionScore: expansionPotentialScore,
+    brandSafetyScore,
+    safetyScore: brandSafetyScore,
+    dimensionScores,
+    baseOpportunityScore: opportunityScore,
+    finalOpportunityScore: opportunityScore,
+    priority: finalScore,
+    action,
+    hasCampaignMeaning: action === "强推" || action === "可测",
+    reason: normalize(note.reason) || "",
+    riskScore: clamp(100 - brandSafetyScore),
+    scoredBy: AI_MODEL_LABEL,
+  };
+}
+
+async function runGeminiScoreRows(rows, onProgress = null) {
+  const chunks = chunkRows(rows);
+  const scored = [];
+  const summaries = [];
+
+  for (const [index, chunk] of chunks.entries()) {
+    onProgress?.(index + 1, chunks.length);
+    const result = await runGeminiJsonStep(`规则多维度打分 ${index + 1}/${chunks.length}`, buildGeminiScorePrompt(chunk));
+    summaries.push(result.summary || "");
+    const scoresById = new Map((result.scores || []).map((item) => [Number(item.id), item]));
+    chunk.forEach((row) => {
+      const note = scoresById.get(Number(row.__rowId));
+      if (!note) throw new Error(`${AI_MODEL_LABEL} 打分结果缺少 query id ${row.__rowId}`);
+      scored.push(applyGeminiScore(row, note));
+    });
+  }
+
+  return { rows: scored.sort(sortByQueryPriority), summary: joinStepSummaries(summaries) };
 }
 
 function buildGeminiClusterPrompt(rows) {
   const candidates = rows
     .filter((row) => Number(row.priority || 0) >= 70)
-    .slice(0, 80)
     .map((row) => ({
       id: row.__rowId,
       query: row.query,
@@ -995,44 +1249,51 @@ function buildGeminiClusterPrompt(rows) {
       topic: row.topic,
       reason: row.reason,
     }));
-  return [
-    "你负责主题聚类。只处理 >=70 分的 query。",
-    "按 Topic 聚类，一个 Cluster 算一个 Campaign；最高分作为 primaryQuery，其余作为 supportingQueries。",
-    "例如 hotel booking / cheap hotel / hotel deals / luxury hotel 归入 Hotel Campaign。",
-    "输出 JSON，不要 Markdown。schema:",
-    JSON.stringify({
-      clusters: [{
-        campaignCluster: "Hotel Campaign",
-        primaryId: 1,
-        primaryQuery: "hotel booking",
-        supportingIds: [2, 3],
-        supportingQueries: ["cheap hotel", "hotel deals"],
-        reason: "聚类原因",
-      }],
-      summary: "聚类总结",
-    }),
+  const config = getPromptConfig("cluster");
+  return buildPromptFromConfig(
+    config,
+    config.schema || DEFAULT_PROMPT_CONFIG.cluster.schema,
     "输入 rows:",
-    JSON.stringify(candidates, null, 2),
-  ].join("\n");
+    candidates,
+  );
 }
 
-async function runGeminiClusterRows(scoredRows) {
-  const result = await runGeminiJsonStep("主题聚类", buildGeminiClusterPrompt(scoredRows));
+async function runGeminiClusterRows(scoredRows, onProgress = null) {
+  const candidates = scoredRows.filter((row) => Number(row.priority || 0) >= 70);
+  if (!candidates.length) {
+    return {
+      rows: scoredRows.map((row) => ({ ...row, geminiSelected: false })).sort(sortByQueryPriority),
+      summary: "没有 70 分以上 query 进入主题聚类。",
+    };
+  }
+
+  const chunks = chunkRows(candidates);
   const clusterById = new Map();
-  (result.clusters || []).forEach((cluster, index) => {
-    const ids = [cluster.primaryId, ...(cluster.supportingIds || [])].map(Number).filter(Boolean);
-    ids.forEach((id) => {
-      clusterById.set(id, {
-        campaignCluster: normalize(cluster.campaignCluster),
-        primaryQuery: normalize(cluster.primaryQuery),
-        supportingQueries: Array.isArray(cluster.supportingQueries) ? cluster.supportingQueries.map(normalize).filter(Boolean) : [],
-        clusterReason: normalize(cluster.reason),
-        geminiSelected: Number(cluster.primaryId) === id,
-        geminiRank: Number(cluster.primaryId) === id ? index + 1 : null,
+  const summaries = [];
+  let clusterRank = 1;
+
+  for (const [index, chunk] of chunks.entries()) {
+    onProgress?.(index + 1, chunks.length);
+    const result = await runGeminiJsonStep(`主题聚类 ${index + 1}/${chunks.length}`, buildGeminiClusterPrompt(chunk));
+    summaries.push(result.summary || "");
+    (result.clusters || []).forEach((cluster) => {
+      const primaryId = Number(cluster.primaryId);
+      const ids = [primaryId, ...(cluster.supportingIds || [])].map(Number).filter(Boolean);
+      ids.forEach((id) => {
+        clusterById.set(id, {
+          campaignCluster: normalizeBroadCampaignCluster(cluster.campaignCluster),
+          primaryQuery: normalize(cluster.primaryQuery),
+          supportingQueries: Array.isArray(cluster.supportingQueries) ? cluster.supportingQueries.map(normalize).filter(Boolean) : [],
+          clusterReason: normalize(cluster.reason),
+          geminiSelected: primaryId === id,
+          geminiRank: primaryId === id ? clusterRank : null,
+        });
       });
+      clusterRank += 1;
     });
-  });
-  const clustered = scoredRows.map((row) => {
+  }
+
+  const initiallyClustered = scoredRows.map((row) => {
     const cluster = clusterById.get(Number(row.__rowId));
     if (!cluster) return { ...row, geminiSelected: false };
     return {
@@ -1041,38 +1302,29 @@ async function runGeminiClusterRows(scoredRows) {
       campaignDirection: row.campaignDirection || getCampaignDirection({ ...row, ...cluster }),
     };
   });
-  return { rows: clustered.sort(sortByQueryPriority), summary: result.summary || "" };
+
+  const clustered = mergeBroadCampaignClusters(initiallyClustered);
+  return { rows: clustered.sort(sortByQueryPriority), summary: joinStepSummaries(summaries) };
 }
 
 function buildGeminiTitlePrompt(topRows) {
   const rows = topRows.map((row, index) => ({
     rank: index + 1,
     id: row.__rowId,
+    campaign: row.campaignCluster || row.topic || row.primaryQuery || row.query,
     primaryQuery: row.primaryQuery || row.query,
     supportingQueries: row.supportingQueries || [],
     campaignCluster: row.campaignCluster || row.topic,
     score: row.priority,
     reason: row.clusterReason || row.reason,
   }));
-  return [
-    "你负责为 Top10 Campaign 生成标题文案。",
-    "每个 Campaign 输出 3 条参考文案，必须包含 type、title、requirement，中文输出，适合 UGC 活动。",
-    "输出 JSON，不要 Markdown。schema:",
-    JSON.stringify({
-      campaigns: [{
-        id: 1,
-        campaignDirection: "活动方向",
-        campaignTitles: [
-          { type: "活动标题", title: "标题 1", requirement: "投稿要求 1" },
-          { type: "活动标题", title: "标题 2", requirement: "投稿要求 2" },
-          { type: "活动标题", title: "标题 3", requirement: "投稿要求 3" },
-        ],
-      }],
-      summary: "标题总结",
-    }),
+  const config = getPromptConfig("title");
+  return buildPromptFromConfig(
+    config,
+    config.schema || DEFAULT_PROMPT_CONFIG.title.schema,
     "输入 campaigns:",
-    JSON.stringify(rows, null, 2),
-  ].join("\n");
+    rows,
+  );
 }
 
 async function runGeminiTitleRows(rows) {
@@ -1085,7 +1337,7 @@ async function runGeminiTitleRows(rows) {
     return {
       ...row,
       campaignDirection: normalize(note.campaignDirection) || row.campaignDirection,
-      campaignTitles: normalizeCampaignTitles(note.campaignTitles, row.primaryQuery || row.query).slice(0, 3),
+      campaignTitles: normalizeCampaignTitles(note.campaignTitles, getCampaignClusterLabel(row)).slice(0, 3),
     };
   });
   return { rows: withTitles, summary: result.summary || "" };
@@ -1358,12 +1610,24 @@ function chooseBroaderSeed(a, b) {
 function normalizeCampaignTitles(titles, seed) {
   if (Array.isArray(titles) && titles.length) {
     return titles
-      .map((item) => ({
-        type: normalizeCampaignTitleType(item.type),
-        title: normalize(item.title),
-        requirement: normalize(item.requirement),
-      }))
-      .filter((item) => item.title)
+      .map((item) => {
+        const titleEn = normalize(item.titleEn || item.englishTitle || item.title_en);
+        const titleZh = normalize(item.titleZh || item.chineseTitle || item.title_zh);
+        const requirementEn = normalize(item.requirementEn || item.englishRequirement || item.requirement_en);
+        const requirementZh = normalize(item.requirementZh || item.chineseRequirement || item.requirement_zh);
+        const legacyTitle = normalize(item.title);
+        const legacyRequirement = normalize(item.requirement);
+        return {
+          type: normalizeCampaignTitleType(item.type),
+          title: titleEn || legacyTitle,
+          titleEn: titleEn || legacyTitle,
+          titleZh,
+          requirement: requirementEn || legacyRequirement,
+          requirementEn: requirementEn || legacyRequirement,
+          requirementZh,
+        };
+      })
+      .filter((item) => item.titleEn || item.titleZh || item.title)
       .slice(0, 5);
   }
   return buildCampaignTitleIdeas(seed);
@@ -1566,6 +1830,18 @@ function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function chunkRows(rows, size = GEMINI_BATCH_SIZE) {
+  const chunks = [];
+  for (let index = 0; index < rows.length; index += size) {
+    chunks.push(rows.slice(index, index + size));
+  }
+  return chunks;
+}
+
+function joinStepSummaries(summaries) {
+  return summaries.map(normalize).filter(Boolean).join("；");
+}
+
 function cleanQueryRows(rows) {
   const cleaned = [];
   let removed = 0;
@@ -1613,8 +1889,17 @@ function isInvalidQuery(query) {
   if (symbolCount / Math.max(q.length, 1) > 0.5) return true;
   if (includesAny(lower, patterns.safetyBlocked)) return true;
   if (includesAny(lower, patterns.noUgcSpace)) return true;
+  if (isEntertainmentConsumeQuery(lower)) return true;
   if (/^(what time|how many|how old|how tall|when is|where is)\b/.test(lower)) return true;
   return false;
+}
+
+function isEntertainmentConsumeQuery(lowerQuery) {
+  const hasKnownCelebrity = includesAny(lowerQuery, patterns.celebrity);
+  const hasEntertainmentConsumeSignal = includesAny(lowerQuery, patterns.entertainmentConsume);
+  const hasConsumePhrase = /\b(news|gossip|rumou?r|tea|scandal|dating|breakup|divorce|cast|episode|season|recap|spoiler|explained|drama|series|tv show|reality show|variety show)\b/.test(lowerQuery)
+    || /(新闻|爆料|八卦|吃瓜|绯闻|恋情|分手|离婚|塌房|剧情|剧透|演员|嘉宾|综艺|真人秀|电视剧|剧集|节目)/.test(lowerQuery);
+  return (hasKnownCelebrity && hasConsumePhrase) || (hasEntertainmentConsumeSignal && hasConsumePhrase);
 }
 
 async function runScreening(rows) {
@@ -1672,7 +1957,10 @@ async function runScreening(rows) {
   try {
     setActiveStep("clean", `${AI_MODEL_ID} 正在清洗 query...`);
     render();
-    const cleaned = await runGeminiCleanRows(rows);
+    const cleaned = await runGeminiCleanRows(rows, (batch, total) => {
+      setActiveStep("clean", `${AI_MODEL_ID} 正在清洗 query，第 ${batch}/${total} 批，每批最多 ${GEMINI_BATCH_SIZE} 行...`);
+      render();
+    });
     if (runId !== state.runId) return;
     state.rows = cleaned.rows;
     state.cleanStats = { kept: cleaned.kept, removed: cleaned.removed };
@@ -1689,7 +1977,10 @@ async function runScreening(rows) {
 
     setActiveStep("score", `${AI_MODEL_ID} 正在给每个 query 计算 campaign 潜力分...`);
     render();
-    const scored = await runGeminiScoreRows(state.rows);
+    const scored = await runGeminiScoreRows(state.rows, (batch, total) => {
+      setActiveStep("score", `${AI_MODEL_ID} 正在打分，第 ${batch}/${total} 批，每批最多 ${GEMINI_BATCH_SIZE} 行...`);
+      render();
+    });
     if (runId !== state.runId) return;
     state.scoredRows = scored.rows;
     state.results = scored.rows;
@@ -1697,16 +1988,19 @@ async function runScreening(rows) {
     state.completedSteps.add("score");
     state.aiSummary = scored.summary;
 
-    setActiveStep("classify", `${AI_MODEL_ID} 正在将 70 分以上 query 按 Topic 聚类...`);
+    setActiveStep("classify", `${AI_MODEL_ID} 正在将 70 分以上 query 按 Campaign 大类聚类...`);
     render();
-    const clustered = await runGeminiClusterRows(state.scoredRows);
+    const clustered = await runGeminiClusterRows(state.scoredRows, (batch, total) => {
+      setActiveStep("classify", `${AI_MODEL_ID} 正在主题聚类，第 ${batch}/${total} 批，每批最多 ${GEMINI_BATCH_SIZE} 条高分 query...`);
+      render();
+    });
     if (runId !== state.runId) return;
     state.results = clustered.rows;
     state.clusterResults = clustered.rows;
     state.completedSteps.add("classify");
     state.aiSummary = clustered.summary;
 
-    setActiveStep("top", "正在按 Campaign Cluster 输出 Top10 Query...");
+    setActiveStep("top", "正在按 Campaign Cluster 输出 Top10 Cluster...");
     render();
     await wait(250);
     if (runId !== state.runId) return;
@@ -1750,16 +2044,17 @@ function setActiveStep(step, message) {
 }
 
 function render() {
-  const visible = state.qualifiedOnly ? state.results.filter((item) => item.hasCampaignMeaning) : state.results;
+  const visible = getScoreFilteredRows(state.results);
   updateControls();
   renderAuth();
   renderSummary();
   renderProgress();
   renderResults(visible);
+  bindScoreFilterButtons();
 }
 
 function updateControls() {
-  [els.runInputButton, els.qualifiedOnly, els.exportButton, els.connectCrateButton, els.disconnectCrateButton].forEach((button) => {
+  [els.runInputButton, els.exportButton, els.connectCrateButton, els.disconnectCrateButton].forEach((button) => {
     button.disabled = state.running;
   });
   els.connectCrateButton.disabled = state.running || state.authorizing;
@@ -1792,11 +2087,10 @@ function renderAuth() {
 }
 
 function renderSummary() {
-  const qualified = state.results.filter((item) => item.hasCampaignMeaning);
   els.totalCount.textContent = state.results.length;
   els.pushCount.textContent = state.results.filter((item) => item.action === "强推").length;
   els.testCount.textContent = state.results.filter((item) => item.action === "可测").length;
-  els.seedCount.textContent = Math.min(qualified.length || state.results.length, 10);
+  els.clusterCount.textContent = getClusterCount(state.results);
 }
 
 function renderProgress() {
@@ -1896,15 +2190,15 @@ function buildProgressSteps() {
     ],
   };
   const clusterStep = {
-    summary: "已将 70 分以上 query 按 Topic 聚类，一个 Cluster 算一个 Campaign。",
+    summary: "已将 70 分以上 query 按 Campaign 大类聚类，一个大类算一个 Campaign。",
     items: topQueries.slice(0, 5).map((item) => `${item.campaignCluster || item.topic}：${item.primaryQuery || item.query}`),
   };
   const topStep = {
-    summary: topQueries.length ? `完成 Query 级别 Top10 输出。` : "暂无可输出的 Top10 query。",
-    items: topQueries.length ? topQueries.slice(0, 5).map((item) => `${item.query} ${formatOpportunityScore(item)}分`) : ["建议降低阈值或补充更明确的 query"],
+    summary: topQueries.length ? "完成 Cluster 级别 Top10 输出。" : "暂无可输出的 Top10 cluster。",
+    items: topQueries.length ? topQueries.slice(0, 5).map((item) => `${getCampaignClusterLabel(item)} ${formatPercentScore(item)}分`) : ["建议降低阈值或补充更明确的 query"],
   };
   const assetStep = {
-    summary: `${scoringLabel} 已生成每个 query 的 3 条 campaign 标题文案。`,
+    summary: `${scoringLabel} 已生成每个 Campaign Cluster 的 3 条 campaign 标题文案。`,
     items: ["活动标题", "投稿要求", "内容模板方向"],
   };
 
@@ -1916,7 +2210,7 @@ function buildProgressSteps() {
       score: scoreStep,
       classify: {
         summary: state.activeStep === "classify" ? `${scoringLabel} 正在进行主题聚类...` : "等待 campaign 潜力打分完成",
-        items: state.activeStep === "classify" ? ["70 分以上 query 进入 Topic 聚类", "最高分作为 Primary Query", "其余作为 Supporting Queries"] : [],
+        items: state.activeStep === "classify" ? ["70 分以上 query 进入 Campaign 大类聚类", "最高分作为 Primary Query", "其余作为 Supporting Queries"] : [],
       },
     };
   }
@@ -1929,7 +2223,7 @@ function buildProgressSteps() {
       score: scoreStep,
       classify: clusterStep,
       top: {
-        summary: state.activeStep === "top" ? "正在输出 Top10 搜索 Query..." : "等待主题聚类完成",
+        summary: state.activeStep === "top" ? "正在输出 Top10 Campaign Cluster..." : "等待主题聚类完成",
         items: state.activeStep === "top" ? ["Loading..."] : [],
       },
     };
@@ -1962,7 +2256,7 @@ function buildProgressSteps() {
 
 function renderResults(rows) {
   if (state.running) {
-    els.resultList.innerHTML = `<div class="empty-state">后台筛选正在运行，结果会在 Top10 query 生成后展示。</div>`;
+    els.resultList.innerHTML = `<div class="empty-state">后台筛选正在运行，结果会在 Top10 Campaign Cluster 生成后展示。</div>`;
     return;
   }
   const warningBanner = state.aiError
@@ -1971,21 +2265,20 @@ function renderResults(rows) {
 
   if (!rows.length) {
     if (state.results.length) {
-      const querySection = buildQuerySection(state.results, `当前阈值 ${state.threshold} 分下暂无活动池结果，下面展示本次输入的 query 明细`);
-      els.resultList.innerHTML = `${warningBanner}${buildTopQuerySection(state.results)}${buildQueryCopySection(state.results)}<div class="empty-state">这些 query 已完成筛选，但没有达到当前活动阈值。</div>${querySection}`;
+      els.resultList.innerHTML = `${warningBanner}${buildTopQuerySection(state.results)}${buildQueryCopySection(state.results)}<div class="empty-state">${getScoreFilterTitle()}暂无 query。</div>`;
       return;
     }
 
     const emptyText = state.results.length
-      ? `当前阈值 ${state.threshold} 分下暂无活动池结果。可以降低阈值，或点击“显示全部”查看观察/剔除项。`
-      : "跑完后这里会展示 Top10 query 表格，以及每个 query 的 3 条参考文案。";
+      ? `${getScoreFilterTitle()}暂无 query。`
+      : "跑完后这里会展示 Top10 Campaign Cluster 表格，以及每个 cluster 的 3 条参考文案。";
     els.resultList.innerHTML = `${warningBanner}<div class="empty-state">${emptyText}</div>`;
     return;
   }
 
   const topQuerySection = buildTopQuerySection(state.results);
   const copySection = buildQueryCopySection(state.results);
-  const querySection = buildQuerySection(rows, state.qualifiedOnly ? "活动池 query 明细" : "全部 query 明细");
+  const querySection = buildQuerySection(rows, getScoreFilterTitle());
 
   els.resultList.innerHTML = warningBanner + topQuerySection + copySection + querySection;
 }
@@ -1996,8 +2289,8 @@ function buildTopQuerySection(rows) {
   return `
     <section class="top-table-section">
       <div class="section-title">
-        <span>Top10 Query</span>
-        <strong>${scoringLabel} 最终分 + 主题聚类</strong>
+        <span>Top10 Campaign Cluster</span>
+        <strong>${scoringLabel} 最终分 + Cluster 排序</strong>
       </div>
       ${state.aiSummary ? `<p class="ai-summary">${escapeHtml(state.aiSummary)}</p>` : ""}
       <div class="result-table-wrap">
@@ -2017,9 +2310,9 @@ function buildTopQuerySection(rows) {
               <tr>
                 <td>${index + 1}</td>
                 <td><strong>${escapeHtml(item.primaryQuery || item.query)}</strong><span>${escapeHtml(item.category)} · ${escapeHtml(item.intent)}</span></td>
-                <td>${renderSupportingQueries(item.supportingQueries)}</td>
+                <td>${renderSupportingQueries(item.supportingQueries, item.clusterQueryCount)}</td>
                 <td>${escapeHtml(item.campaignCluster || item.topic || getTopic(item).label)}</td>
-                <td><b>${formatOpportunityScore(item)}</b><small>/ 5</small></td>
+                <td><b>${formatPercentScore(item)}</b><small>/ 100</small></td>
                 <td>${escapeHtml(item.aiReason || item.reason || getCampaignDirection(item))}</td>
               </tr>
             `).join("")}
@@ -2036,7 +2329,7 @@ function buildQueryCopySection(rows) {
     <section class="copy-section">
       <div class="section-title">
         <span>Reference Copy</span>
-        <strong>每个 query 3 条参考文案</strong>
+        <strong>每个聚类 3 条参考文案</strong>
       </div>
       <div class="copy-grid">
         ${topRows.map((item, index) => `
@@ -2044,16 +2337,18 @@ function buildQueryCopySection(rows) {
             <div class="copy-card-head">
               <span>${String(index + 1).padStart(2, "0")}</span>
               <div>
-                <h3>${escapeHtml(item.query)}</h3>
-                <p>${escapeHtml(getCampaignDirection(item))}</p>
+                <h3>${escapeHtml(getCampaignClusterLabel(item))}</h3>
+                <p>${escapeHtml(getClusterQueryContext(item))}</p>
               </div>
             </div>
             <div class="copy-list">
               ${getCampaignCopiesForQuery(item).map((copy) => `
                 <div>
                   <span>${escapeHtml(copy.type)}</span>
-                  <strong>${escapeHtml(copy.title)}</strong>
-                  <p>${escapeHtml(copy.requirement)}</p>
+                  <strong>${escapeHtml(copy.titleEn || copy.title)}</strong>
+                  ${copy.titleZh ? `<strong class="zh-copy">${escapeHtml(copy.titleZh)}</strong>` : ""}
+                  <p>${escapeHtml(copy.requirementEn || copy.requirement)}</p>
+                  ${copy.requirementZh ? `<p class="zh-copy">${escapeHtml(copy.requirementZh)}</p>` : ""}
                 </div>
               `).join("")}
             </div>
@@ -2069,14 +2364,22 @@ function buildQuerySection(rows, title) {
   return `
     <section class="query-board">
       <div class="section-title">
-        <span>Query Details</span>
-        <strong>${title}</strong>
+        <div>
+          <span>Query Details</span>
+          <strong>${title}</strong>
+        </div>
+        <div class="score-filter-group">
+          <button class="ghost score-filter ${state.scoreFilter === "90" ? "is-active" : ""}" data-score-filter="90" type="button">90以上</button>
+          <button class="ghost score-filter ${state.scoreFilter === "80" ? "is-active" : ""}" data-score-filter="80" type="button">80～89</button>
+          <button class="ghost score-filter ${state.scoreFilter === "70" ? "is-active" : ""}" data-score-filter="70" type="button">70～79</button>
+        </div>
       </div>
-      ${rows.slice(0, 12).map((item) => `
+      ${rows.map((item) => `
     <article class="result-item">
       <div>
         <div class="query-title">${escapeHtml(item.query)}${item.queryCount ? ` <span class="cluster-count">${item.queryCount} 条</span>` : ""}</div>
-        <p class="meta-line">${item.domain} · ${item.category} · ${item.intent} · ${item.scoredBy || scoringLabel}：User Need ${item.userNeedScore ?? item.demandScore ?? "-"} / Gap ${item.contentGapScore ?? item.gapScore ?? "-"} / UGC ${item.ugcPotentialScore ?? item.productionScore ?? "-"} / Safety ${item.brandSafetyScore ?? item.safetyScore ?? "-"}</p>
+        <p class="meta-line">${item.domain} · ${item.category} · ${item.intent} · ${item.scoredBy || scoringLabel}</p>
+        ${renderScoreDimensions(item)}
         <p class="meta-line">${escapeHtml(item.aiReason ? `AI：${item.aiReason}` : item.reason)}</p>
         ${item.examples?.length ? `<p class="meta-line">代表 query：${item.examples.map(escapeHtml).join(" / ")}</p>` : ""}
         <p class="seed-line">Campaign 词：${item.seeds.length ? item.seeds.map(escapeHtml).join(" / ") : "不建议产出"}</p>
@@ -2106,10 +2409,33 @@ function renderCampaignTitles(titles = []) {
   `;
 }
 
-function renderSupportingQueries(queries = []) {
-  const safeQueries = Array.isArray(queries) ? queries.filter(Boolean).slice(0, 5) : [];
+function renderScoreDimensions(item) {
+  const dimensions = getScoreDimensionsConfig(true).map((dimension) => [
+    dimension.label || dimension.key,
+    item.dimensionScores?.[dimension.key] ?? item[dimension.key],
+  ]);
+  return `
+    <div class="dimension-list">
+      ${dimensions.map(([label, value]) => `
+        <span><b>${escapeHtml(label)}</b>${escapeHtml(formatDimensionScore(value))}</span>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderSupportingQueries(queries = [], totalCount = null) {
+  const safeQueries = Array.isArray(queries) ? queries.filter(Boolean) : [];
   if (!safeQueries.length) return `<span class="muted-cell">-</span>`;
-  return safeQueries.map((query) => `<span class="supporting-query">${escapeHtml(query)}</span>`).join("");
+  const visibleQueries = safeQueries.slice(0, 5);
+  const hiddenCount = Math.max(0, safeQueries.length - visibleQueries.length);
+  const countLabel = Number(totalCount || 0) > 0
+    ? `${totalCount} queries total · ${safeQueries.length} supporting`
+    : `${safeQueries.length} supporting`;
+  return [
+    `<span class="supporting-count">${countLabel}</span>`,
+    ...visibleQueries.map((query) => `<span class="supporting-query">${escapeHtml(query)}</span>`),
+    hiddenCount ? `<span class="supporting-more">... +${hiddenCount} more</span>` : "",
+  ].join("");
 }
 
 function aggregateSeeds(rows) {
@@ -2155,42 +2481,49 @@ function aggregateSeeds(rows) {
 }
 
 function getTopQueries(rows, limit = 10) {
-  const campaignRows = rows.filter((item) => Number(item.priority || 0) >= 70 && (!item.primaryQuery || item.primaryQuery === item.query));
-  const sorted = (campaignRows.length ? campaignRows : rows).sort(sortByQueryPriority);
-  if (sorted.some((item) => item.scoredBy === AI_MODEL_LABEL)) {
-    const selected = sorted
-      .filter((item) => item.geminiSelected)
-      .sort((a, b) => Number(a.geminiRank || 999) - Number(b.geminiRank || 999) || sortByQueryPriority(a, b))
-      .slice(0, limit);
-    return (selected.length ? selected : sorted).slice(0, limit);
-  }
-  const selected = [];
-  const topicCounts = new Map();
+  const eligibleRows = rows.filter((item) => Number(item.priority || 0) >= 70);
+  const sourceRows = eligibleRows.length ? eligibleRows : rows;
+  const clusterMap = new Map();
 
-  sorted.forEach((item) => {
-    if (selected.length >= limit) return;
-    const topicKey = getTopicQuotaKey(item);
-    const currentCount = topicCounts.get(topicKey) || 0;
-    const maxCount = Number(item.demandScore || 0) >= 5 ? 2 : 1;
-    if (currentCount >= maxCount) return;
-    selected.push({ ...item, duplicatePenalty: currentCount ? 0.4 : 0, finalOpportunityScore: roundOne((item.baseOpportunityScore || item.priority / 20) - (currentCount ? 0.4 : 0)) });
-    topicCounts.set(topicKey, currentCount + 1);
+  sourceRows.forEach((item) => {
+    const cluster = normalizeBroadCampaignCluster(item.campaignCluster || item.topic || item.query, item);
+    const current = clusterMap.get(cluster) || [];
+    current.push({ ...item, campaignCluster: cluster });
+    clusterMap.set(cluster, current);
   });
 
-  if (selected.length < limit) {
-    sorted.forEach((item) => {
-      if (selected.length >= limit) return;
-      if (selected.some((selectedItem) => selectedItem.query.toLowerCase() === item.query.toLowerCase())) return;
-      selected.push({ ...item, duplicatePenalty: 0.5, finalOpportunityScore: roundOne((item.baseOpportunityScore || item.priority / 20) - 0.5) });
-    });
-  }
-
-  return selected.slice(0, limit);
+  return [...clusterMap.entries()]
+    .map(([cluster, group]) => {
+      const sorted = [...group].sort(sortByPercentScore);
+      const primary = sorted[0];
+      const supportingQueries = sorted
+        .filter((row) => normalize(row.query).toLowerCase() !== normalize(primary.query).toLowerCase())
+        .map((row) => row.query)
+        .filter(Boolean);
+      const avgPriority = Math.round(sorted.reduce((sum, row) => sum + Number(row.priority || 0), 0) / sorted.length);
+      return {
+        ...primary,
+        query: primary.query,
+        campaignCluster: cluster,
+        primaryQuery: primary.query,
+        supportingQueries,
+        clusterQueryCount: sorted.length,
+        priority: Number(primary.priority || avgPriority),
+        clusterAverageScore: avgPriority,
+        geminiSelected: true,
+      };
+    })
+    .sort((a, b) => Number(b.priority || 0) - Number(a.priority || 0) || Number(b.clusterQueryCount || 0) - Number(a.clusterQueryCount || 0))
+    .slice(0, limit);
 }
 
 function sortByQueryPriority(a, b) {
   if (a.geminiSelected !== b.geminiSelected) return a.geminiSelected ? -1 : 1;
   if (a.geminiRank || b.geminiRank) return Number(a.geminiRank || 999) - Number(b.geminiRank || 999);
+  return sortByPercentScore(a, b);
+}
+
+function sortByPercentScore(a, b) {
   return Number(b.priority || 0) - Number(a.priority || 0)
     || Number(b.safetyScore || 0) - Number(a.safetyScore || 0)
     || Number(b.productionScore || 0) - Number(a.productionScore || 0)
@@ -2207,6 +2540,79 @@ function getTopicQuotaKey(item) {
 function formatOpportunityScore(item) {
   const score = item.finalOpportunityScore ?? item.baseOpportunityScore ?? (Number(item.priority || 0) / 20);
   return roundOne(Math.max(1, Math.min(5, score))).toFixed(1);
+}
+
+function formatPercentScore(item) {
+  return clamp(Number(item.priority ?? item.finalScore ?? 0), 0, 100);
+}
+
+function normalizeDimensionScore(value) {
+  const score = Number(value ?? 0);
+  if (!Number.isFinite(score) || score <= 0) return 0;
+  return clamp(score <= 5 ? score * 20 : score, 0, 100);
+}
+
+function formatDimensionScore(value) {
+  const score = normalizeDimensionScore(value);
+  return score || "-";
+}
+
+function normalizeBroadCampaignCluster(label, item = {}) {
+  const text = `${normalize(label)} ${normalize(item.query)} ${normalize(item.topic)} ${normalize(item.category)} ${normalize(item.domain)}`.toLowerCase();
+  if (/(hotel|resort|villa|motel|hostel|suite|accommodation|stay|airbnb|cabins?|住宿|酒店|民宿|度假村|别墅)/.test(text)) return "酒店住宿";
+  if (/(guide|itinerary|route|things to do|destination|travel|trip|map|攻略|路线|行程|目的地|景点|打卡)/.test(text)) return "旅行攻略";
+  if (/(food|restaurant|cafe|coffee|brunch|dinner|lunch|dessert|menu|美食|餐厅|咖啡|探店|菜单)/.test(text)) return "美食探店";
+  if (/(parking|shuttle|transport|flight|airport|train|bus|direction|交通|停车|接驳|机场|航班|火车|公交)/.test(text)) return "出行交通";
+  if (/(experience|tour|ticket|package|pool|theme park|show|event|体验|项目|门票|套餐|乐园|演出|活动)/.test(text)) return "体验项目";
+  if (/(shopping|shop|mall|deal|coupon|sale|购物|商场|折扣|优惠)/.test(text)) return "购物生活";
+  if (/(beauty|makeup|skincare|fashion|outfit|style|dress|美妆|护肤|穿搭|时尚)/.test(text)) return "美妆穿搭";
+  if (/(home|furniture|decor|organization|house|家居|装修|收纳|家具)/.test(text)) return "家居生活";
+  if (/(sports|fitness|gym|wellness|health|workout|运动|健身|健康)/.test(text)) return "运动健康";
+  if (/(education|study|school|campus|learning|学习|教育|校园|课程)/.test(text)) return "学习教育";
+  if (/(pet|hobby|diy|craft|garden|photo|兴趣|宠物|手工|园艺|摄影)/.test(text)) return "兴趣爱好";
+  return normalize(label).replace(/\s*campaign$/i, "").trim() || "其他";
+}
+
+function mergeBroadCampaignClusters(rows) {
+  const groups = new Map();
+
+  rows.forEach((row) => {
+    if (!row.campaignCluster) return;
+    const cluster = normalizeBroadCampaignCluster(row.campaignCluster, row);
+    const group = groups.get(cluster) || [];
+    group.push({ ...row, campaignCluster: cluster });
+    groups.set(cluster, group);
+  });
+
+  const clusterById = new Map();
+  groups.forEach((group, cluster) => {
+    const sorted = [...group].sort(sortByPercentScore);
+    const primary = sorted[0];
+    const supportingQueries = sorted
+      .filter((row) => row.__rowId !== primary.__rowId)
+      .map((row) => row.query)
+      .filter(Boolean);
+
+    sorted.forEach((row) => {
+      clusterById.set(Number(row.__rowId), {
+        campaignCluster: cluster,
+        primaryQuery: primary.query,
+        supportingQueries,
+        geminiSelected: Number(row.__rowId) === Number(primary.__rowId),
+        geminiRank: null,
+      });
+    });
+  });
+
+  return rows.map((row) => {
+    const merged = clusterById.get(Number(row.__rowId));
+    if (!merged) return row;
+    return {
+      ...row,
+      ...merged,
+      campaignDirection: row.campaignDirection || getCampaignDirection({ ...row, ...merged }),
+    };
+  });
 }
 
 function getCampaignDirection(item) {
@@ -2227,22 +2633,45 @@ function getCampaignDirection(item) {
   return item.seeds?.[0] ? `${item.seeds[0]} 活动方向` : "UGC 真实体验分享";
 }
 
+function getCampaignClusterLabel(item) {
+  return normalize(item.campaignCluster || item.topic || item.primaryQuery || item.query);
+}
+
+function getClusterQueryContext(item) {
+  const primary = normalize(item.primaryQuery || item.query);
+  const supporting = Array.isArray(item.supportingQueries) ? item.supportingQueries.filter(Boolean).slice(0, 3) : [];
+  return supporting.length
+    ? `Primary: ${primary} · Supporting: ${supporting.join(" / ")}`
+    : `Primary: ${primary}`;
+}
+
 function getCampaignCopiesForQuery(item) {
-  const titles = normalizeCampaignTitles(getCampaignTitlesForQuery(item), item.seeds?.[0] || item.query).slice(0, 3);
+  const clusterLabel = getCampaignClusterLabel(item);
+  const primary = normalize(item.primaryQuery || item.query);
+  const titles = normalizeCampaignTitles(getCampaignTitlesForQuery(item), clusterLabel).slice(0, 3);
   const requirements = [
-    `围绕 ${item.query} 提交真实图片或 15 秒以上视频，说明地点、体验和推荐理由。`,
-    `用清单形式补充关键信息：价格/位置/适合人群/避坑点，内容需原创可验证。`,
-    `按 ${getCampaignDirection(item)} 方向创作，标题里保留核心 query 意图，避免夸大和搬运。`,
+    `围绕「${clusterLabel}」这个聚类提交真实图片或 15 秒以上视频，可参考 ${primary} 等 query，说明体验和推荐理由。`,
+    `用清单形式覆盖该聚类下的共同需求：价格/位置/适合人群/玩法亮点，内容需原创可验证。`,
+    `按 ${getCampaignDirection(item)} 方向创作，标题要表达整个聚类主题，避免只复述单个 query。`,
+  ];
+  const requirementsEn = [
+    `Submit original photos or a video over 15 seconds for the "${clusterLabel}" campaign cluster, using ${primary} and related queries as references.`,
+    "Share a checklist that covers the cluster's shared needs, such as price, location, audience fit, and content angles. Content must be original and verifiable.",
+    `Create around ${getCampaignDirection(item)} and express the full cluster theme in the title. Avoid merely repeating one query.`,
   ];
   return titles.map((title, index) => ({
     ...title,
-    requirement: title.requirement || requirements[index],
+    titleEn: title.titleEn || title.title,
+    titleZh: title.titleZh || "",
+    requirement: title.requirementEn || title.requirement || requirementsEn[index],
+    requirementEn: title.requirementEn || title.requirement || requirementsEn[index],
+    requirementZh: title.requirementZh || requirements[index],
   }));
 }
 
 function getCampaignTitlesForQuery(item) {
   if (item.campaignTitles?.length) return item.campaignTitles;
-  const seed = item.seeds?.[0] || item.topic || item.query;
+  const seed = getCampaignClusterLabel(item);
   const fromGeminiSeed = state.aiSeedRows.find((seedRow) => {
     const examples = seedRow.examples || [];
     return examples.some((example) => normalize(example).toLowerCase() === normalize(item.query).toLowerCase())
@@ -2256,6 +2685,15 @@ function countBy(items, key) {
     counts[item[key]] = (counts[item[key]] || 0) + 1;
     return counts;
   }, {});
+}
+
+function getClusterCount(rows) {
+  const clusters = new Set();
+  rows.forEach((item) => {
+    const key = normalize(item.campaignCluster || item.topic || "");
+    if (key) clusters.add(key.toLowerCase());
+  });
+  return clusters.size;
 }
 
 function getTopBy(items, key) {
@@ -2353,12 +2791,36 @@ els.thresholdInput.addEventListener("input", (event) => {
   els.thresholdValue.textContent = state.threshold;
   rerunCurrentRows();
 });
-els.qualifiedOnly.addEventListener("click", () => {
-  state.qualifiedOnly = !state.qualifiedOnly;
-  els.qualifiedOnly.textContent = state.qualifiedOnly ? "显示全部" : "只看活动池";
+els.resetPromptConfigButton.addEventListener("click", () => {
+  resetPromptConfigEditors();
   render();
 });
 els.exportButton.addEventListener("click", exportCsv);
 
+function bindScoreFilterButtons() {
+  document.querySelectorAll(".score-filter").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.scoreFilter = button.dataset.scoreFilter || "90";
+      render();
+    });
+  });
+}
+
+function getScoreFilteredRows(rows) {
+  return rows.filter((item) => {
+    const score = Number(item.priority || 0);
+    if (state.scoreFilter === "90") return score >= 90;
+    if (state.scoreFilter === "80") return score >= 80 && score <= 89;
+    return score >= 70 && score <= 79;
+  }).sort(sortByPercentScore);
+}
+
+function getScoreFilterTitle() {
+  if (state.scoreFilter === "90") return "90 分以上 query 明细";
+  if (state.scoreFilter === "80") return "80～89 分 query 明细";
+  return "70～79 分 query 明细";
+}
+
+initializePromptConfigEditors();
 renderAuth();
 renderProgress();
