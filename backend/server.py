@@ -7,8 +7,28 @@ import os
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CRATE_API_BASE = os.environ.get("CRATE_API_BASE", "https://example.com/api")
-CRATE_APPROVAL_ORIGIN = os.environ.get("CRATE_APPROVAL_ORIGIN", "")
+
+
+def get_crate_env():
+    return os.environ.get("CRATE_ENV", "staging")
+
+
+def get_crate_api_base():
+    configured = os.environ.get("CRATE_API_BASE")
+    if configured:
+        return configured.rstrip("/")
+    if get_crate_env() == "production":
+        return "https://crate.tiktok-row.net/api"
+    return "https://crate-staging.tiktok-row.net/api"
+
+
+def get_crate_origin():
+    return get_crate_api_base().removesuffix("/api")
+
+
+CRATE_API_BASE = get_crate_api_base()
+CRATE_APPROVAL_ORIGIN = os.environ.get("CRATE_APPROVAL_ORIGIN", get_crate_origin())
+CRATE_MODEL_ID = os.environ.get("CRATE_MODEL_ID", "gemini-2.5-pro")
 
 
 class QueryScreenerHandler(SimpleHTTPRequestHandler):
@@ -33,7 +53,11 @@ class QueryScreenerHandler(SimpleHTTPRequestHandler):
             self._send_json(200, {
                 "crateApiBase": "/crate-api",
                 "crateApprovalOrigin": CRATE_APPROVAL_ORIGIN,
+                "crateModelId": CRATE_MODEL_ID,
             })
+            return
+        if self.path.startswith("/crate-api/"):
+            self._proxy_crate("GET")
             return
         if self.path == "/crate-api" or self.path == "/crate-api/":
             self.send_response(302)
@@ -46,11 +70,11 @@ class QueryScreenerHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         if self.path.startswith("/crate-api/"):
-            self._proxy_crate()
+            self._proxy_crate("POST")
             return
         self._send_json(404, {"error": "not found"})
 
-    def _proxy_crate(self):
+    def _proxy_crate(self, method):
         body = self.rfile.read(int(self.headers.get("Content-Length", "0") or "0"))
         target_path = self.path.replace("/crate-api", "", 1)
         headers = {"Content-Type": "application/json"}
@@ -60,9 +84,9 @@ class QueryScreenerHandler(SimpleHTTPRequestHandler):
 
         request = Request(
             f"{CRATE_API_BASE}{target_path}",
-            data=body,
+            data=body if method == "POST" else None,
             headers=headers,
-            method="POST",
+            method=method,
         )
         try:
             with urlopen(request, timeout=90) as response:

@@ -153,8 +153,9 @@ const CRATE_REFRESH_AHEAD_MS = 5 * 60 * 1000;
 const CRATE_PAIR_TIMEOUT_MS = 5 * 60 * 1000;
 const GEMINI_REQUEST_TIMEOUT_MS = 90 * 1000;
 const GEMINI_BATCH_SIZE = 20;
-const AI_MODEL_ID = "gemini_3f";
-const AI_MODEL_LABEL = "gemini_3f";
+const DEFAULT_AI_MODEL_ID = "gemini-2.5-pro";
+let AI_MODEL_ID = window.APP_CONFIG?.CRATE_MODEL_ID || DEFAULT_AI_MODEL_ID;
+let AI_MODEL_LABEL = AI_MODEL_ID;
 const RULE_FALLBACK_LABEL = "本地规则";
 const PROMPT_CONFIG_STORAGE_KEY = "query-screener.prompt-config.v2";
 
@@ -438,6 +439,12 @@ function getDefaultCrateApprovalOrigin() {
   return window.APP_CONFIG?.CRATE_APPROVAL_ORIGIN || "";
 }
 
+function setCrateModel(modelId) {
+  const nextModelId = normalize(modelId || window.APP_CONFIG?.CRATE_MODEL_ID || DEFAULT_AI_MODEL_ID);
+  AI_MODEL_ID = nextModelId;
+  AI_MODEL_LABEL = nextModelId;
+}
+
 function readCrateSettings() {
   try {
     const raw = window.localStorage.getItem(CRATE_SETTINGS_KEY);
@@ -487,6 +494,7 @@ async function hydrateCrateSettingsFromServer() {
       apiBase: state.crateSettings?.apiBase || config.crateApiBase || getDefaultCrateApiBase(),
       approvalOrigin: state.crateSettings?.approvalOrigin || config.crateApprovalOrigin || getDefaultCrateApprovalOrigin(),
     };
+    setCrateModel(config.crateModelId);
     initializeCrateSettingsForm();
   } catch {
     // Static hosts do not have /api/config; the manual settings fields remain available.
@@ -531,7 +539,10 @@ async function parseCrateResponse(response) {
   }
 
   if (!response.ok) {
-    throw new Error(json?.message || text || `Crate request failed (${response.status})`);
+    const error = new Error(json?.message || json?.error || text || `Crate request failed (${response.status})`);
+    error.status = response.status;
+    error.retryAfterSec = Number(response.headers.get("Retry-After") || 0);
+    throw error;
   }
 
   if (json?.statusCode && json.statusCode !== 0) {
@@ -583,23 +594,63 @@ async function crateFetch(path, body) {
   const session = await getFreshCrateSession();
   const apiBase = getCrateApiBase();
   if (!apiBase) throw new Error("请先填写 Crate API Base，或部署动态 API 代理。");
-  const response = await fetch(`${apiBase}${path}`, {
+  const makeRequest = (accessToken) => fetch(`${apiBase}${path}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "x-openapi-token": session.accessToken,
+      "x-openapi-token": accessToken,
     },
     body: JSON.stringify(body),
   });
 
   try {
+    let response = await makeRequest(session.accessToken);
+    if (response.status === 401 && session.refreshToken) {
+      const refreshed = await refreshCrateSession(session);
+      response = await makeRequest(refreshed.accessToken);
+    }
     return await parseCrateResponse(response);
   } catch (error) {
-    if (String(error.message || "").toLowerCase().includes("unauthorized")) {
+    if (error.status === 401 || String(error.message || "").toLowerCase().includes("unauthorized")) {
       clearCrateSession();
+      throw new Error("Crate 登录已失效，请重新连接。");
+    }
+    if (error.status === 429) {
+      throw new Error(`Crate 请求过于频繁，请稍后重试${error.retryAfterSec ? `（约 ${error.retryAfterSec} 秒）` : ""}。`);
+    }
+    if (error.status === 503) {
+      throw new Error("Crate 服务暂时不可用，请稍后重试。");
     }
     throw error;
   }
+}
+
+async function crateGet(path, accessToken = null) {
+  const session = accessToken ? { accessToken } : await getFreshCrateSession();
+  const apiBase = getCrateApiBase();
+  if (!apiBase) throw new Error("请先填写 Crate API Base，或部署动态 API 代理。");
+  const response = await fetch(`${apiBase}${path}`, {
+    method: "GET",
+    headers: {
+      "x-openapi-token": session.accessToken,
+    },
+  });
+  return parseCrateResponse(response);
+}
+
+async function probeCrateModels(accessToken) {
+  return crateGet("/openapi/v1/model/loras", accessToken);
+}
+
+function buildCrateApprovalUrl(pair, approvalOrigin) {
+  const verifyUri = normalize(pair.verifyUri || pair.verificationUri || pair.verification_uri);
+  if (!verifyUri) throw new Error("Crate 授权响应缺少 verifyUri。");
+  const baseUrl = /^https?:\/\//i.test(verifyUri)
+    ? verifyUri
+    : `${approvalOrigin}${verifyUri.startsWith("/") ? verifyUri : `/${verifyUri}`}`;
+  const url = new URL(baseUrl);
+  url.searchParams.set("code", pair.userCode);
+  return url.toString();
 }
 
 function withTimeout(promise, timeoutMs, message) {
@@ -614,13 +665,12 @@ async function connectCrate() {
   state.authorizing = true;
   renderAuth();
   try {
-    const approvalOrigin = getCrateApprovalOrigin();
-    if (!approvalOrigin) throw new Error("请先填写 Approval Origin。");
     const started = await cratePublicFetch("/openapi/pair/start", {
       clientName: CRATE_CLIENT_NAME,
     });
     const pair = started.data;
-    const approveUrl = `${approvalOrigin}${pair.verifyUri}?code=${encodeURIComponent(pair.userCode)}`;
+    const approvalOrigin = getCrateApprovalOrigin();
+    const approveUrl = buildCrateApprovalUrl(pair, approvalOrigin);
     els.authStatus.textContent = `请在打开的 Crate 授权页确认，验证码：${pair.userCode}`;
     window.open(approveUrl, "_blank", "noopener,noreferrer");
 
@@ -634,6 +684,7 @@ async function connectCrate() {
       const result = polled.data;
 
       if (result.status === "approved") {
+        await probeCrateModels(result.accessToken);
         writeCrateSession({
           accessToken: result.accessToken,
           refreshToken: result.refreshToken,

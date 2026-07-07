@@ -14,10 +14,10 @@ A lightweight local web app for screening UGC campaign query candidates. It read
 
 ## Run Locally
 
-Start the local proxy if you are testing on your own machine:
+Start the local proxy if you are testing on your own machine. By default it uses Crate staging:
 
 ```bash
-CRATE_API_BASE="https://your-api-host.example.com/api" python3 backend/server.py
+python3 backend/server.py
 ```
 
 Then open:
@@ -39,10 +39,17 @@ This repository includes Vercel serverless API routes:
 - `/api/config`
 - `/api/crate-api/*`
 
-Set these environment variables in Vercel:
+By default the Vercel API proxy uses:
 
-- `CRATE_API_BASE`: the real Crate API base URL, for example `https://your-crate-api.example.com/api`
-- `CRATE_APPROVAL_ORIGIN`: the Crate approval host used by the pairing flow
+- staging: `https://crate-staging.tiktok-row.net/api`
+- production: `https://crate.tiktok-row.net/api`
+
+Optional environment variables:
+
+- `CRATE_ENV`: `staging` or `production`; defaults to staging unless `VERCEL_ENV=production`.
+- `CRATE_API_BASE`: override the Crate API base URL.
+- `CRATE_APPROVAL_ORIGIN`: override the approval host; otherwise derived from the API base.
+- `CRATE_MODEL_ID`: override the model; defaults to `gemini-2.5-pro`.
 
 After deployment, users open the Vercel URL and use the app directly. The frontend calls `/api/crate-api`, and the serverless API forwards requests to Crate.
 
@@ -52,8 +59,14 @@ The Python server also supports dynamic deployment. It serves the frontend and p
 
 Required environment variables:
 
+- none for staging
+
+Optional environment variables:
+
+- `CRATE_ENV`
 - `CRATE_API_BASE`
 - `CRATE_APPROVAL_ORIGIN`
+- `CRATE_MODEL_ID`
 - `PORT` if your host provides one
 
 ## Configuration
@@ -62,6 +75,7 @@ The backend/serverless API reads:
 
 - `CRATE_API_BASE`: API base URL used by the proxy.
 - `CRATE_APPROVAL_ORIGIN`: approval origin for the pairing flow.
+- `CRATE_MODEL_ID`: Crate model used for Gemini text calls.
 
 The frontend reads:
 
@@ -74,7 +88,8 @@ For local customization, create a `config.local.js` file and load it before `app
 ```js
 window.APP_CONFIG = {
   CRATE_API_BASE: "https://your-api.example.com/crate-api",
-  CRATE_APPROVAL_ORIGIN: "https://your-approval-origin.example.com"
+  CRATE_APPROVAL_ORIGIN: "https://your-approval-origin.example.com",
+  CRATE_MODEL_ID: "gemini-2.5-pro"
 };
 ```
 

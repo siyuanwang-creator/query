@@ -2,12 +2,24 @@ const REQUEST_TIMEOUT_MS = 90 * 1000;
 
 function sendCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-openapi-token");
 }
 
 function normalizeBaseUrl(value) {
   return String(value || "").replace(/\/$/, "");
+}
+
+function getCrateEnv() {
+  if (process.env.CRATE_ENV) return process.env.CRATE_ENV;
+  return process.env.VERCEL_ENV === "production" ? "production" : "staging";
+}
+
+function getCrateApiBase() {
+  if (process.env.CRATE_API_BASE) return normalizeBaseUrl(process.env.CRATE_API_BASE);
+  return getCrateEnv() === "production"
+    ? "https://crate.tiktok-row.net/api"
+    : "https://crate-staging.tiktok-row.net/api";
 }
 
 function getTargetPath(req) {
@@ -24,16 +36,12 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  if (req.method !== "POST") {
+  if (req.method !== "POST" && req.method !== "GET") {
     res.status(405).json({ error: "method not allowed" });
     return;
   }
 
-  const crateApiBase = normalizeBaseUrl(process.env.CRATE_API_BASE);
-  if (!crateApiBase) {
-    res.status(500).json({ error: "CRATE_API_BASE is not configured on the server." });
-    return;
-  }
+  const crateApiBase = getCrateApiBase();
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -43,9 +51,9 @@ module.exports = async function handler(req, res) {
 
   try {
     const response = await fetch(`${crateApiBase}${getTargetPath(req)}`, {
-      method: "POST",
+      method: req.method,
       headers,
-      body: JSON.stringify(req.body || {}),
+      body: req.method === "POST" ? JSON.stringify(req.body || {}) : undefined,
       signal: controller.signal,
     });
     const text = await response.text();
