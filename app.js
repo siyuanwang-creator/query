@@ -146,11 +146,8 @@ const patterns = {
   ],
 };
 
-const CRATE_API_BASE = window.APP_CONFIG?.CRATE_API_BASE || (window.location.protocol === "file:"
-  ? "http://127.0.0.1:5180/crate-api"
-  : "/crate-api");
-const CRATE_APPROVAL_ORIGIN = window.APP_CONFIG?.CRATE_APPROVAL_ORIGIN || "https://example.com";
 const CRATE_CLIENT_NAME = "query-campaign-screener";
+const CRATE_SETTINGS_KEY = "query-screener.crate.settings.v1";
 const CRATE_SESSION_KEY = "query-screener.crate.session.v1";
 const CRATE_REFRESH_AHEAD_MS = 5 * 60 * 1000;
 const CRATE_PAIR_TIMEOUT_MS = 5 * 60 * 1000;
@@ -282,6 +279,7 @@ const state = {
   completedSteps: new Set(),
   parsedRows: [],
   cleanStats: { kept: 0, removed: 0 },
+  crateSettings: readCrateSettings(),
   crateSession: readCrateSession(),
 };
 
@@ -291,6 +289,9 @@ const els = {
   runInputButton: document.querySelector("#runInputButton"),
   connectCrateButton: document.querySelector("#connectCrateButton"),
   disconnectCrateButton: document.querySelector("#disconnectCrateButton"),
+  crateApiBaseInput: document.querySelector("#crateApiBaseInput"),
+  crateApprovalOriginInput: document.querySelector("#crateApprovalOriginInput"),
+  saveCrateSettingsButton: document.querySelector("#saveCrateSettingsButton"),
   authStatus: document.querySelector("#authStatus"),
   aiModeBadge: document.querySelector("#aiModeBadge"),
   cleanPromptConfig: document.querySelector("#cleanPromptConfig"),
@@ -427,6 +428,64 @@ function getSafetyScore(categoryKey, hasCelebrity, clarity) {
   return 5;
 }
 
+function getDefaultCrateApiBase() {
+  return window.APP_CONFIG?.CRATE_API_BASE || (window.location.protocol === "file:"
+    ? "http://127.0.0.1:5180/crate-api"
+    : "");
+}
+
+function getDefaultCrateApprovalOrigin() {
+  return window.APP_CONFIG?.CRATE_APPROVAL_ORIGIN || "";
+}
+
+function readCrateSettings() {
+  try {
+    const raw = window.localStorage.getItem(CRATE_SETTINGS_KEY);
+    const stored = raw ? JSON.parse(raw) : {};
+    return {
+      apiBase: stored.apiBase || getDefaultCrateApiBase(),
+      approvalOrigin: stored.approvalOrigin || getDefaultCrateApprovalOrigin(),
+    };
+  } catch {
+    return {
+      apiBase: getDefaultCrateApiBase(),
+      approvalOrigin: getDefaultCrateApprovalOrigin(),
+    };
+  }
+}
+
+function writeCrateSettings(settings) {
+  const nextSettings = {
+    apiBase: normalize(settings.apiBase).replace(/\/$/, ""),
+    approvalOrigin: normalize(settings.approvalOrigin).replace(/\/$/, ""),
+  };
+  window.localStorage.setItem(CRATE_SETTINGS_KEY, JSON.stringify(nextSettings));
+  state.crateSettings = nextSettings;
+}
+
+function getCrateApiBase() {
+  return normalize(state.crateSettings?.apiBase || getDefaultCrateApiBase()).replace(/\/$/, "");
+}
+
+function getCrateApprovalOrigin() {
+  return normalize(state.crateSettings?.approvalOrigin || getDefaultCrateApprovalOrigin()).replace(/\/$/, "");
+}
+
+function initializeCrateSettingsForm() {
+  if (!els.crateApiBaseInput || !els.crateApprovalOriginInput) return;
+  els.crateApiBaseInput.value = getCrateApiBase();
+  els.crateApprovalOriginInput.value = getCrateApprovalOrigin();
+}
+
+function saveCrateSettingsFromForm() {
+  writeCrateSettings({
+    apiBase: els.crateApiBaseInput.value,
+    approvalOrigin: els.crateApprovalOriginInput.value,
+  });
+  clearCrateSession();
+  render();
+}
+
 function readCrateSession() {
   try {
     const raw = window.localStorage.getItem(CRATE_SESSION_KEY);
@@ -467,7 +526,9 @@ async function parseCrateResponse(response) {
 }
 
 async function cratePublicFetch(path, body) {
-  const response = await fetch(`${CRATE_API_BASE}${path}`, {
+  const apiBase = getCrateApiBase();
+  if (!apiBase) throw new Error("请先填写 Crate API Base。公开网页需要一个可访问的 Crate 代理地址。");
+  const response = await fetch(`${apiBase}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -504,7 +565,9 @@ async function getFreshCrateSession() {
 
 async function crateFetch(path, body) {
   const session = await getFreshCrateSession();
-  const response = await fetch(`${CRATE_API_BASE}${path}`, {
+  const apiBase = getCrateApiBase();
+  if (!apiBase) throw new Error("请先填写 Crate API Base。公开网页需要一个可访问的 Crate 代理地址。");
+  const response = await fetch(`${apiBase}${path}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -535,11 +598,13 @@ async function connectCrate() {
   state.authorizing = true;
   renderAuth();
   try {
+    const approvalOrigin = getCrateApprovalOrigin();
+    if (!approvalOrigin) throw new Error("请先填写 Approval Origin。");
     const started = await cratePublicFetch("/openapi/pair/start", {
       clientName: CRATE_CLIENT_NAME,
     });
     const pair = started.data;
-    const approveUrl = `${CRATE_APPROVAL_ORIGIN}${pair.verifyUri}?code=${encodeURIComponent(pair.userCode)}`;
+    const approveUrl = `${approvalOrigin}${pair.verifyUri}?code=${encodeURIComponent(pair.userCode)}`;
     els.authStatus.textContent = `请在打开的 Crate 授权页确认，验证码：${pair.userCode}`;
     window.open(approveUrl, "_blank", "noopener,noreferrer");
 
@@ -2059,6 +2124,7 @@ function updateControls() {
   });
   els.connectCrateButton.disabled = state.running || state.authorizing;
   els.disconnectCrateButton.disabled = state.running || state.authorizing || !state.crateSession;
+  if (els.saveCrateSettingsButton) els.saveCrateSettingsButton.disabled = state.running || state.authorizing;
 }
 
 function renderAuth() {
@@ -2080,7 +2146,10 @@ function renderAuth() {
     return;
   }
 
-  els.authStatus.textContent = `未连接 Crate。请先连接 Crate，JSON 步骤需要 ${AI_MODEL_LABEL} 执行。`;
+  const missingSettings = !getCrateApiBase() || !getCrateApprovalOrigin();
+  els.authStatus.textContent = missingSettings
+    ? `未连接 Crate。公开网页需要先填写 Crate API Base 和 Approval Origin。`
+    : `未连接 Crate。请先连接 Crate，JSON 步骤需要 ${AI_MODEL_LABEL} 执行。`;
   els.aiModeBadge.textContent = `${AI_MODEL_LABEL} required`;
   els.aiModeBadge.classList.remove("is-connected");
   els.connectCrateButton.textContent = "连接 Crate";
@@ -2785,6 +2854,7 @@ els.disconnectCrateButton.addEventListener("click", () => {
   clearCrateSession();
   render();
 });
+els.saveCrateSettingsButton.addEventListener("click", saveCrateSettingsFromForm);
 
 els.thresholdInput.addEventListener("input", (event) => {
   state.threshold = Number(event.target.value);
@@ -2821,6 +2891,7 @@ function getScoreFilterTitle() {
   return "70～79 分 query 明细";
 }
 
+initializeCrateSettingsForm();
 initializePromptConfigEditors();
 renderAuth();
 renderProgress();

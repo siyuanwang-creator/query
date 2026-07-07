@@ -49,6 +49,18 @@
             <button class="ghost" id="disconnectCrateButton" type="button">断开</button>
             <span id="aiModeBadge">gemini_3f required</span>
           </div>
+          <details class="api-settings">
+            <summary>公开网页 Crate 连接配置</summary>
+            <label>
+              <span>Crate API Base</span>
+              <input id="crateApiBaseInput" type="url" placeholder="https://your-api.example.com/crate-api" />
+            </label>
+            <label>
+              <span>Approval Origin</span>
+              <input id="crateApprovalOriginInput" type="url" placeholder="https://your-approval-origin.example.com" />
+            </label>
+            <button class="ghost" id="saveCrateSettingsButton" type="button">保存 Crate 配置</button>
+          </details>
         </section>
 
         <section class="prompt-card">
