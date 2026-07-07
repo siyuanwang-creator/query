@@ -271,7 +271,7 @@ const state = {
   aiError: "",
   aiFallback: false,
   aiEnhanced: false,
-  scoreFilter: "90",
+  scoreFilter: "all",
   threshold: 60,
   runId: 0,
   running: false,
@@ -2407,7 +2407,10 @@ function renderResults(rows) {
 
   if (!rows.length) {
     if (state.results.length) {
-      els.resultList.innerHTML = `${warningBanner}${buildTopQuerySection(state.results)}${buildQueryCopySection(state.results)}<div class="empty-state">${getScoreFilterTitle()}暂无 query。</div>`;
+      els.resultList.innerHTML = warningBanner
+        + buildTopQuerySection(state.results)
+        + buildQueryCopySection(state.results)
+        + buildQuerySection(rows, getScoreFilterTitle());
       return;
     }
 
@@ -2516,7 +2519,7 @@ function buildQuerySection(rows, title) {
           <button class="ghost score-filter ${state.scoreFilter === "70" ? "is-active" : ""}" data-score-filter="70" type="button">70～79</button>
         </div>
       </div>
-      ${rows.map((item) => `
+      ${rows.length ? rows.map((item) => `
     <article class="result-item">
       <div>
         <div class="query-title">${escapeHtml(item.query)}${item.queryCount ? ` <span class="cluster-count">${item.queryCount} 条</span>` : ""}</div>
@@ -2531,7 +2534,7 @@ function buildQuerySection(rows, title) {
         <span class="tag ${getActionClass(item.aiDecision || item.action)}">${item.aiDecision || item.action}</span>
       </div>
     </article>
-      `).join("")}
+  `).join("") : `<div class="empty-state">${title}暂无 query。</div>`}
     </section>
   `;
 }
@@ -2943,7 +2946,8 @@ els.exportButton.addEventListener("click", exportCsv);
 function bindScoreFilterButtons() {
   document.querySelectorAll(".score-filter").forEach((button) => {
     button.addEventListener("click", () => {
-      state.scoreFilter = button.dataset.scoreFilter || "90";
+      const nextFilter = button.dataset.scoreFilter || "all";
+      state.scoreFilter = state.scoreFilter === nextFilter ? "all" : nextFilter;
       render();
     });
   });
@@ -2952,6 +2956,7 @@ function bindScoreFilterButtons() {
 function getScoreFilteredRows(rows) {
   return rows.filter((item) => {
     const score = Number(item.priority || 0);
+    if (state.scoreFilter === "all") return score >= 70;
     if (state.scoreFilter === "90") return score >= 90;
     if (state.scoreFilter === "80") return score >= 80 && score <= 89;
     return score >= 70 && score <= 79;
@@ -2959,6 +2964,7 @@ function getScoreFilteredRows(rows) {
 }
 
 function getScoreFilterTitle() {
+  if (state.scoreFilter === "all") return "70 分以上 query 明细";
   if (state.scoreFilter === "90") return "90 分以上 query 明细";
   if (state.scoreFilter === "80") return "80～89 分 query 明细";
   return "70～79 分 query 明细";
