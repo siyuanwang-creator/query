@@ -490,9 +490,15 @@ async function hydrateCrateSettingsFromServer() {
     const response = await fetch("/api/config", { headers: { "Accept": "application/json" } });
     if (!response.ok) return;
     const config = await response.json();
+    const defaultApiBase = getDefaultCrateApiBase();
+    const defaultApprovalOrigin = getDefaultCrateApprovalOrigin();
     state.crateSettings = {
-      apiBase: state.crateSettings?.apiBase || config.crateApiBase || getDefaultCrateApiBase(),
-      approvalOrigin: state.crateSettings?.approvalOrigin || config.crateApprovalOrigin || getDefaultCrateApprovalOrigin(),
+      apiBase: state.crateSettings?.apiBase && state.crateSettings.apiBase !== defaultApiBase
+        ? state.crateSettings.apiBase
+        : config.crateApiBase || defaultApiBase,
+      approvalOrigin: state.crateSettings?.approvalOrigin && state.crateSettings.approvalOrigin !== defaultApprovalOrigin
+        ? state.crateSettings.approvalOrigin
+        : config.crateApprovalOrigin || defaultApprovalOrigin,
     };
     setCrateModel(config.crateModelId);
     initializeCrateSettingsForm();

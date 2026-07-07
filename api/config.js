@@ -9,7 +9,7 @@ module.exports = function handler(req, res) {
   }
 
   res.status(200).json({
-    crateApiBase: "/api/crate-api",
+    crateApiBase: getCrateBaseUrl(),
     crateApprovalOrigin: process.env.CRATE_APPROVAL_ORIGIN || getCrateOrigin(),
     crateModelId: process.env.CRATE_MODEL_ID || "gemini-2.5-pro",
   });
