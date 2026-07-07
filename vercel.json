@@ -6,6 +6,10 @@
   },
   "rewrites": [
     {
+      "source": "/api/crate-api/:path*",
+      "destination": "/api/crate-api?path=:path*"
+    },
+    {
       "source": "/((?!api/).*)",
       "destination": "/index.html"
     }

@@ -23,9 +23,9 @@ function getCrateApiBase() {
 }
 
 function getTargetPath(req) {
-  const path = req.query.path;
-  const parts = Array.isArray(path) ? path : [path].filter(Boolean);
-  return `/${parts.map((part) => encodeURIComponent(part)).join("/")}`;
+  const rawPath = Array.isArray(req.query.path) ? req.query.path.join("/") : String(req.query.path || "");
+  const targetPath = rawPath.startsWith("/") ? rawPath : `/${rawPath}`;
+  return targetPath === "/" ? "" : targetPath;
 }
 
 module.exports = async function handler(req, res) {
@@ -41,8 +41,6 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  const crateApiBase = getCrateApiBase();
-
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   const headers = { "Content-Type": "application/json" };
@@ -50,7 +48,7 @@ module.exports = async function handler(req, res) {
   if (token) headers["x-openapi-token"] = Array.isArray(token) ? token[0] : token;
 
   try {
-    const response = await fetch(`${crateApiBase}${getTargetPath(req)}`, {
+    const response = await fetch(`${getCrateApiBase()}${getTargetPath(req)}`, {
       method: req.method,
       headers,
       body: req.method === "POST" ? JSON.stringify(req.body || {}) : undefined,
