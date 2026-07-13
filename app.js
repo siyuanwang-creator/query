@@ -273,6 +273,7 @@ const state = {
   aiFallback: false,
   aiEnhanced: false,
   scoreFilter: "all",
+  stepReports: {},
   runId: 0,
   running: false,
   authorizing: false,
@@ -302,6 +303,7 @@ const els = {
   resetPromptConfigButton: document.querySelector("#resetPromptConfigButton"),
   promptConfigStatus: document.querySelector("#promptConfigStatus"),
   exportButton: document.querySelector("#exportButton"),
+  stepDownloadActions: document.querySelector("#stepDownloadActions"),
   runStatus: document.querySelector("#runStatus"),
   progressTrack: document.querySelector("#progressTrack"),
   resultList: document.querySelector("#resultList"),
@@ -1260,6 +1262,8 @@ async function runGeminiCleanRows(rows, onProgress = null) {
   const sourceRows = rows.map((row, index) => ({ ...row, __rowId: index + 1, query: sanitizeQuery(row.query) }));
   const chunks = chunkRows(sourceRows);
   const kept = [];
+  const keptDetails = [];
+  const removedDetails = [];
   const summaries = [];
   const seen = new Set();
 
@@ -1267,15 +1271,35 @@ async function runGeminiCleanRows(rows, onProgress = null) {
     onProgress?.(index + 1, chunks.length);
     const result = await runGeminiJsonStep(`清洗 query ${index + 1}/${chunks.length}`, buildGeminiCleanPrompt(chunk));
     summaries.push(result.summary || "");
-    const cleanQueryById = new Map((result.keptRows || []).map((item) => [Number(item.id), sanitizeQuery(item.query)]));
+    const cleanResultById = new Map((result.keptRows || []).map((item) => [Number(item.id), item]));
+    (result.removedRows || []).forEach((item) => {
+      removedDetails.push({
+        id: Number(item.id),
+        query: sanitizeQuery(item.query),
+        reason: normalize(item.reason) || "Gemini 清洗判断剔除",
+      });
+    });
     chunk.forEach((row) => {
-      if (!cleanQueryById.has(Number(row.__rowId))) return;
-      const query = cleanQueryById.get(Number(row.__rowId)) || row.query;
-      if (isInvalidQuery(query)) return;
+      const cleanNote = cleanResultById.get(Number(row.__rowId));
+      if (!cleanNote) return;
+      const query = sanitizeQuery(cleanNote.query) || row.query;
+      if (isInvalidQuery(query)) {
+        removedDetails.push({ id: row.__rowId, query, reason: "本地二次校验剔除：空值、乱码、风险词、无 UGC 空间或无意义 query。" });
+        return;
+      }
       const key = query.toLowerCase();
-      if (seen.has(key)) return;
+      if (seen.has(key)) {
+        removedDetails.push({ id: row.__rowId, query, reason: "本地二次校验剔除：重复 Query。" });
+        return;
+      }
       seen.add(key);
-      kept.push({ ...row, query });
+      const nextRow = { ...row, query };
+      kept.push(nextRow);
+      keptDetails.push({
+        id: row.__rowId,
+        query,
+        reason: normalize(cleanNote.reason) || "保留为可继续打分 query",
+      });
     });
   }
 
@@ -1284,6 +1308,11 @@ async function runGeminiCleanRows(rows, onProgress = null) {
     kept: kept.length,
     removed: Math.max(0, sourceRows.length - kept.length),
     summary: joinStepSummaries(summaries),
+    details: {
+      sourceRows,
+      keptRows: keptDetails,
+      removedRows: removedDetails.sort((a, b) => Number(a.id || 0) - Number(b.id || 0)),
+    },
   };
 }
 
@@ -2050,6 +2079,7 @@ async function runScreening(rows) {
     state.aiError = "";
     state.aiFallback = false;
     state.aiEnhanced = false;
+    state.stepReports = {};
     state.parsedRows = [];
     state.cleanStats = { kept: 0, removed: 0 };
     state.completedSteps = new Set();
@@ -2073,6 +2103,7 @@ async function runScreening(rows) {
   state.aiError = "";
   state.aiFallback = false;
   state.aiEnhanced = false;
+  state.stepReports = {};
   state.parsedRows = rows;
   state.cleanStats = { kept: 0, removed: 0 };
   state.completedSteps = new Set();
@@ -2100,6 +2131,7 @@ async function runScreening(rows) {
     if (runId !== state.runId) return;
     state.rows = cleaned.rows;
     state.cleanStats = { kept: cleaned.kept, removed: cleaned.removed };
+    setStepReport("clean", buildCleanReport(cleaned));
     state.completedSteps.add("clean");
     state.aiSummary = cleaned.summary;
 
@@ -2121,6 +2153,7 @@ async function runScreening(rows) {
     state.scoredRows = scored.rows;
     state.results = scored.rows;
     state.clusterResults = scored.rows;
+    setStepReport("score", buildScoreReport(scored));
     state.completedSteps.add("score");
     state.aiSummary = scored.summary;
 
@@ -2133,6 +2166,7 @@ async function runScreening(rows) {
     if (runId !== state.runId) return;
     state.results = clustered.rows;
     state.clusterResults = clustered.rows;
+    setStepReport("classify", buildClusterReport(clustered));
     state.completedSteps.add("classify");
     state.aiSummary = clustered.summary;
 
@@ -2140,6 +2174,7 @@ async function runScreening(rows) {
     render();
     await wait(250);
     if (runId !== state.runId) return;
+    setStepReport("top", buildTopReport(state.results));
     state.completedSteps.add("top");
 
     setActiveStep("asset", `${AI_MODEL_ID} 正在生成 campaign 标题文案...`);
@@ -2148,6 +2183,7 @@ async function runScreening(rows) {
     if (runId !== state.runId) return;
     state.results = titled.rows.sort(sortByQueryPriority);
     state.clusterResults = state.results;
+    setStepReport("asset", buildTitleReport(titled));
     const qualified = state.results.filter((item) => item.hasCampaignMeaning);
     state.aiSeedRows = aggregateSeeds(qualified.length ? qualified : state.results).slice(0, 10);
     state.aiSummary = titled.summary;
@@ -2178,6 +2214,7 @@ function render() {
   const visible = getScoreFilteredRows(state.results);
   updateControls();
   renderAuth();
+  renderStepDownloadButtons();
   renderSummary();
   renderProgress();
   renderResults(visible);
@@ -2561,6 +2598,153 @@ function renderScoreDimensions(item) {
   `;
 }
 
+const STEP_REPORT_LABELS = {
+  clean: "清洗结果",
+  score: "打分结果",
+  classify: "聚类结果",
+  top: "Top10结果",
+  asset: "标题文案",
+};
+
+function setStepReport(stepKey, text) {
+  state.stepReports[stepKey] = {
+    label: STEP_REPORT_LABELS[stepKey] || stepKey,
+    filename: `query-campaign-${stepKey}-${formatRunTimestamp()}.txt`,
+    text,
+  };
+}
+
+function formatRunTimestamp() {
+  const date = new Date();
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+}
+
+function buildReportHeader(title, summary = "") {
+  return [
+    title,
+    `生成时间：${new Date().toLocaleString()}`,
+    summary ? `总结：${summary}` : "",
+    "",
+  ].filter((line) => line !== "").join("\n");
+}
+
+function buildCleanReport(cleaned) {
+  const lines = [buildReportHeader("清洗 Query 结果", cleaned.summary)];
+  lines.push(`输入 Query：${cleaned.details.sourceRows.length} 条`);
+  lines.push(`保留 Query：${cleaned.kept} 条`);
+  lines.push(`剔除 Query：${cleaned.removed} 条`);
+  lines.push("");
+  lines.push("一、保留的 Query");
+  lines.push(...formatQueryReasonRows(cleaned.details.keptRows));
+  lines.push("");
+  lines.push("二、剔除的 Query");
+  lines.push(...formatQueryReasonRows(cleaned.details.removedRows));
+  return lines.join("\n");
+}
+
+function formatQueryReasonRows(rows) {
+  if (!rows.length) return ["- 无"];
+  return rows.map((row, index) => `${index + 1}. [${row.id || "-"}] ${row.query || "-"}\n   原因：${row.reason || "-"}`);
+}
+
+function buildScoreReport(scored) {
+  const dimensions = getScoreDimensionsConfig(true);
+  const lines = [buildReportHeader("规则多维度打分结果", scored.summary)];
+  lines.push(`打分 Query：${scored.rows.length} 条`);
+  lines.push("");
+  scored.rows.forEach((row, index) => {
+    lines.push(`${index + 1}. ${row.query}`);
+    lines.push(`   最终分：${formatPercentScore(row)}`);
+    lines.push(`   决策：${row.aiDecision || row.action || "-"}`);
+    lines.push(`   聚类候选 Topic：${row.topic || "-"}`);
+    dimensions.forEach((dimension) => {
+      const score = row.dimensionScores?.[dimension.key] ?? row[dimension.key];
+      lines.push(`   ${dimension.label || dimension.key}：${formatDimensionScore(score)}`);
+    });
+    lines.push(`   原因：${row.aiReason || row.reason || "-"}`);
+    lines.push("");
+  });
+  return lines.join("\n");
+}
+
+function buildClusterReport(clustered) {
+  const rows = getTopQueries(clustered.rows, 999);
+  const lines = [buildReportHeader("主题聚类结果", clustered.summary)];
+  lines.push(`70 分以上 Cluster：${rows.length} 个`);
+  lines.push("");
+  rows.forEach((row, index) => {
+    lines.push(`${index + 1}. ${getCampaignClusterLabel(row)}`);
+    lines.push(`   Primary Query：${row.primaryQuery || row.query}`);
+    lines.push(`   Primary 分数：${formatPercentScore(row)}`);
+    lines.push(`   Supporting Queries：${formatSupportingQueryText(row.supportingQueries)}`);
+    lines.push(`   聚类原因：${row.clusterReason || row.reason || "-"}`);
+    lines.push("");
+  });
+  return lines.join("\n");
+}
+
+function buildTopReport(rows) {
+  const topRows = getTopQueries(rows, 10);
+  const lines = [buildReportHeader("Top10 Campaign Cluster 结果", state.aiSummary)];
+  topRows.forEach((row, index) => {
+    lines.push(`${index + 1}. ${getCampaignClusterLabel(row)}`);
+    lines.push(`   Primary Query：${row.primaryQuery || row.query}`);
+    lines.push(`   Supporting Queries：${formatSupportingQueryText(row.supportingQueries)}`);
+    lines.push(`   评分：${formatPercentScore(row)}`);
+    lines.push(`   原因：${row.aiReason || row.clusterReason || row.reason || "-"}`);
+    lines.push("");
+  });
+  return lines.join("\n");
+}
+
+function buildTitleReport(titled) {
+  const topRows = getTopQueries(titled.rows, 10);
+  const lines = [buildReportHeader("Campaign 标题文案结果", titled.summary)];
+  topRows.forEach((row, index) => {
+    lines.push(`${index + 1}. ${getCampaignClusterLabel(row)}`);
+    lines.push(`   Primary Query：${row.primaryQuery || row.query}`);
+    getCampaignCopiesForQuery(row).forEach((copy, copyIndex) => {
+      lines.push(`   ${copyIndex + 1}) [${copy.type}] ${copy.titleEn || copy.title || "-"}`);
+      lines.push(`      ${copy.titleZh || "-"}`);
+      lines.push(`      Requirement EN：${copy.requirementEn || copy.requirement || "-"}`);
+      lines.push(`      Requirement ZH：${copy.requirementZh || "-"}`);
+    });
+    lines.push("");
+  });
+  return lines.join("\n");
+}
+
+function formatSupportingQueryText(queries = []) {
+  const normalized = Array.isArray(queries) ? queries.map(normalize).filter(Boolean) : [];
+  return normalized.length ? normalized.join(" / ") : "-";
+}
+
+function renderStepDownloadButtons() {
+  if (!els.stepDownloadActions) return;
+  const order = ["clean", "score", "classify", "top", "asset"];
+  els.stepDownloadActions.innerHTML = order
+    .filter((stepKey) => state.stepReports[stepKey])
+    .map((stepKey) => `<button class="ghost step-download-button" data-step-report="${stepKey}" type="button">下载${escapeHtml(state.stepReports[stepKey].label)}</button>`)
+    .join("");
+}
+
+function downloadStepReport(stepKey) {
+  const report = state.stepReports[stepKey];
+  if (!report) return;
+  downloadTextFile(report.filename, report.text);
+}
+
+function downloadTextFile(filename, text) {
+  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 function renderSupportingQueries(queries = [], totalCount = null) {
   const safeQueries = Array.isArray(queries) ? queries.filter(Boolean) : [];
   if (!safeQueries.length) return `<span class="muted-cell">-</span>`;
@@ -2930,6 +3114,11 @@ els.resetPromptConfigButton.addEventListener("click", () => {
   render();
 });
 els.exportButton.addEventListener("click", exportCsv);
+els.stepDownloadActions.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-step-report]");
+  if (!button) return;
+  downloadStepReport(button.dataset.stepReport);
+});
 
 function bindScoreFilterButtons() {
   document.querySelectorAll(".score-filter").forEach((button) => {

@@ -106,6 +106,16 @@ p {
   gap: 10px;
 }
 
+.step-download-actions {
+  display: contents;
+}
+
+.step-download-actions button {
+  min-height: 38px;
+  padding: 0 12px;
+  font-size: 12px;
+}
+
 button,
 .upload-button {
   display: inline-grid;
