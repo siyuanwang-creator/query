@@ -152,13 +152,13 @@ const CRATE_SESSION_KEY = "query-screener.crate.session.v1";
 const CRATE_REFRESH_AHEAD_MS = 5 * 60 * 1000;
 const CRATE_PAIR_TIMEOUT_MS = 5 * 60 * 1000;
 const GEMINI_REQUEST_TIMEOUT_MS = 90 * 1000;
-const GEMINI_BATCH_SIZE = 20;
+const GEMINI_BATCH_SIZE = 10;
 const DEFAULT_AI_MODEL_ID = "gemini-2.5-pro";
 let AI_MODEL_ID = window.APP_CONFIG?.CRATE_MODEL_ID || DEFAULT_AI_MODEL_ID;
 let AI_MODEL_LABEL = AI_MODEL_ID;
 const TEST_ACTION_SCORE = 60;
 const RULE_FALLBACK_LABEL = "本地规则";
-const PROMPT_CONFIG_STORAGE_KEY = "query-screener.prompt-config.v2";
+const PROMPT_CONFIG_STORAGE_KEY = "query-screener.prompt-config.v3";
 
 const DEFAULT_PROMPT_CONFIG = {
   clean: {
@@ -179,39 +179,27 @@ const DEFAULT_PROMPT_CONFIG = {
   score: {
     role: "你负责给每个 query 计算 campaign 潜力分。必须逐条打分，不做聚类。",
     instructions: [
-      "每个维度都用 0-100 分制。finalScore 也为 0-100，opportunityScore 为 1-5。",
-      "Campaign Intent 关注是否适合 Challenge / Checklist / Template / Vote / Showcase / Transformation 等互动。",
-      "Expansion Potential 关注是否能扩展 Packing / Playlist / Food / Route / Friends / Pets 等玩法。",
-      "finalScore 需要按 dimensions 中的 weight 加权计算；decision 输出强推/可测/观察/剔除。",
+      "为了稳定输出，你只需要给 3 个核心维度打分，每个维度 0-100。",
+      "User Need：用户需求是否真实、明确、可被内容满足。",
+      "Campaign Potential：综合判断 UGC 分享意愿、活动玩法适配度、玩法扩展空间。",
+      "Brand Safety：品牌安全，越安全越高。",
+      "不要输出 finalScore、opportunityScore、decision；前端会基于这 3 个维度和本地规则分自动计算最终分。",
+      "reason 只写一句话，控制在 40 个中文字符以内。",
     ],
     dimensions: [
-      { key: "userNeedScore", label: "User Need", weight: 25, description: "用户需求是否真实、明确、可被内容满足。" },
-      { key: "contentGapScore", label: "Content Gap", weight: 20, description: "平台现有内容是否不足；gap 越大越值得做。" },
-      { key: "ugcPotentialScore", label: "UGC Potential", weight: 20, description: "用户是否愿意拍摄、分享、展示或参与。" },
-      { key: "trendMomentumScore", label: "Trend Momentum", weight: 5, description: "是否有上升趋势；避免已经过气。" },
-      { key: "campaignIntentScore", label: "Campaign Intent", weight: 10, description: "是否适合 Challenge / Checklist / Template / Vote / Showcase / Transformation 等互动。" },
-      { key: "expansionPotentialScore", label: "Expansion Potential", weight: 10, description: "能否扩展出 Packing / Playlist / Food / Route / Friends / Pets 等玩法。" },
+      { key: "userNeedScore", label: "User Need", weight: 35, description: "用户需求是否真实、明确、可被内容满足。" },
+      { key: "campaignPotentialScore", label: "Campaign Potential", weight: 45, description: "综合判断 UGC 分享意愿、互动玩法适配度、玩法扩展空间。" },
       { key: "brandSafetyScore", label: "Brand Safety", weight: 10, description: "品牌安全，不容易翻车。" },
     ],
     schema: {
       scores: [{
         id: 1,
         query: "query",
-        domain: "垂类",
-        intent: "意图",
-        topic: "粗 Topic",
         dimensionScores: {
           userNeedScore: 0,
-          contentGapScore: 0,
-          ugcPotentialScore: 0,
-          trendMomentumScore: 0,
-          campaignIntentScore: 0,
-          expansionPotentialScore: 0,
+          campaignPotentialScore: 0,
           brandSafetyScore: 0,
         },
-        opportunityScore: 0,
-        finalScore: 0,
-        decision: "强推/可测/观察/剔除",
         reason: "打分原因",
       }],
       summary: "打分总结",
@@ -1327,7 +1315,7 @@ function buildGeminiScorePrompt(rows) {
       ...config,
       instructions: [
         ...normalizeInstructions(config),
-        "当前打分维度如下；如果运营改了 dimensions，就严格按新的 dimensions 输出 dimensionScores：",
+        "当前只输出这些核心打分维度；不要额外输出没要求的 7 维细分分数：",
         ...dimensionLines,
       ],
     },
@@ -1338,27 +1326,46 @@ function buildGeminiScorePrompt(rows) {
 }
 
 function applyGeminiScore(row, note) {
-  const finalScore = clamp(Number(note.finalScore ?? 0));
-  const opportunityScore = roundOne(Number(note.opportunityScore ?? finalScore / 20));
-  const action = normalize(note.decision) || getActionFromPriority(finalScore);
+  const localScore = scoreQuery(row);
   const rawDimensionScores = note.dimensionScores && typeof note.dimensionScores === "object" ? note.dimensionScores : {};
-  const dimensionScores = getScoreDimensionsConfig().reduce((scores, dimension) => {
+  const compactScores = getScoreDimensionsConfig().reduce((scores, dimension) => {
     scores[dimension.key] = normalizeDimensionScore(rawDimensionScores[dimension.key] ?? note[dimension.key]);
     return scores;
   }, {});
-  const userNeedScore = normalizeDimensionScore(dimensionScores.userNeedScore ?? note.userNeedScore ?? note.demandScore);
-  const contentGapScore = normalizeDimensionScore(dimensionScores.contentGapScore ?? note.contentGapScore);
-  const ugcPotentialScore = normalizeDimensionScore(dimensionScores.ugcPotentialScore ?? note.ugcPotentialScore);
-  const trendMomentumScore = normalizeDimensionScore(dimensionScores.trendMomentumScore ?? note.trendMomentumScore);
-  const campaignIntentScore = normalizeDimensionScore(dimensionScores.campaignIntentScore ?? note.campaignIntentScore);
-  const expansionPotentialScore = normalizeDimensionScore(dimensionScores.expansionPotentialScore ?? note.expansionPotentialScore);
-  const brandSafetyScore = normalizeDimensionScore(dimensionScores.brandSafetyScore ?? note.brandSafetyScore);
+  const campaignPotentialScore = normalizeDimensionScore(
+    compactScores.campaignPotentialScore
+      ?? note.campaignPotentialScore
+      ?? averageNumbers([note.ugcPotentialScore, note.campaignIntentScore, note.expansionPotentialScore]),
+  );
+  const userNeedScore = normalizeDimensionScore(compactScores.userNeedScore ?? note.userNeedScore ?? note.demandScore ?? localScore.userNeedScore);
+  const brandSafetyScore = normalizeDimensionScore(compactScores.brandSafetyScore ?? note.brandSafetyScore ?? localScore.brandSafetyScore);
+  const contentGapScore = normalizeDimensionScore(localScore.contentGapScore);
+  const ugcPotentialScore = campaignPotentialScore;
+  const trendMomentumScore = normalizeDimensionScore(localScore.trendMomentumScore);
+  const campaignIntentScore = campaignPotentialScore;
+  const expansionPotentialScore = campaignPotentialScore;
+  const finalScore = clamp(
+    userNeedScore * 0.25
+    + contentGapScore * 0.2
+    + ugcPotentialScore * 0.2
+    + trendMomentumScore * 0.05
+    + campaignIntentScore * 0.1
+    + expansionPotentialScore * 0.1
+    + brandSafetyScore * 0.1,
+  );
+  const opportunityScore = roundOne(finalScore / 20);
+  const action = getActionFromPriority(finalScore);
+  const dimensionScores = {
+    userNeedScore,
+    campaignPotentialScore,
+    brandSafetyScore,
+  };
   return {
-    ...scoreQuery(row),
+    ...localScore,
     query: normalize(note.query) || row.query,
-    domain: normalize(note.domain) || classifyDomain(row, row.query, classifyQuery(row.query, row)),
-    intent: normalize(note.intent) || "",
-    topic: normalize(note.topic) || getTopic(row).label,
+    domain: localScore.domain,
+    intent: localScore.intent,
+    topic: localScore.topic,
     demandScore: userNeedScore,
     userNeedScore,
     contentGapScore,
@@ -1383,6 +1390,12 @@ function applyGeminiScore(row, note) {
   };
 }
 
+function averageNumbers(values) {
+  const nums = values.map(Number).filter((value) => Number.isFinite(value));
+  if (!nums.length) return 0;
+  return nums.reduce((sum, value) => sum + value, 0) / nums.length;
+}
+
 async function runGeminiScoreRows(rows, onProgress = null) {
   const chunks = chunkRows(rows);
   const scored = [];
@@ -1390,17 +1403,42 @@ async function runGeminiScoreRows(rows, onProgress = null) {
 
   for (const [index, chunk] of chunks.entries()) {
     onProgress?.(index + 1, chunks.length);
-    const result = await runGeminiJsonStep(`规则多维度打分 ${index + 1}/${chunks.length}`, buildGeminiScorePrompt(chunk));
-    summaries.push(result.summary || "");
-    const scoresById = new Map((result.scores || []).map((item) => [Number(item.id), item]));
-    chunk.forEach((row) => {
-      const note = scoresById.get(Number(row.__rowId));
-      if (!note) throw new Error(`${AI_MODEL_LABEL} 打分结果缺少 query id ${row.__rowId}`);
-      scored.push(applyGeminiScore(row, note));
-    });
+    try {
+      const result = await runGeminiJsonStep(`规则多维度打分 ${index + 1}/${chunks.length}`, buildGeminiScorePrompt(chunk));
+      summaries.push(result.summary || "");
+      const scoresById = new Map((result.scores || []).map((item) => [Number(item.id), item]));
+      chunk.forEach((row) => {
+        const note = scoresById.get(Number(row.__rowId));
+        scored.push(note
+          ? applyGeminiScore(row, note)
+          : createLocalScoreResult(row, `${AI_MODEL_LABEL} 未返回该 query，已用本地规则分补齐。`));
+      });
+    } catch (error) {
+      summaries.push(`第 ${index + 1} 批 Gemini 打分失败，已用本地规则分补齐：${error.message || error}`);
+      chunk.forEach((row) => scored.push(createLocalScoreResult(row, "Gemini 批次打分失败，已用本地规则分补齐。")));
+    }
   }
 
   return { rows: scored.sort(sortByQueryPriority), summary: joinStepSummaries(summaries) };
+}
+
+function createLocalScoreResult(row, reason) {
+  const localScore = scoreQuery(row);
+  const campaignPotentialScore = normalizeDimensionScore(averageNumbers([
+    localScore.ugcPotentialScore,
+    localScore.campaignIntentScore,
+    localScore.expansionPotentialScore,
+  ]));
+  return {
+    ...localScore,
+    dimensionScores: {
+      userNeedScore: localScore.userNeedScore,
+      campaignPotentialScore,
+      brandSafetyScore: localScore.brandSafetyScore,
+    },
+    scoredBy: RULE_FALLBACK_LABEL,
+    reason: reason || localScore.reason,
+  };
 }
 
 function buildGeminiClusterPrompt(rows) {
@@ -2011,26 +2049,50 @@ function cleanQueryRows(rows) {
   const cleaned = [];
   let removed = 0;
   const seen = new Set();
+  const keptRows = [];
+  const removedRows = [];
 
   rows.forEach((row) => {
     const query = sanitizeQuery(row.query);
     if (!query || isInvalidQuery(query)) {
       removed += 1;
+      removedRows.push({
+        id: row.__rowId || removed,
+        query: query || row.query || "-",
+        reason: "本地硬清洗剔除：空值、乱码、风险词、无 UGC 空间或无意义 query。",
+      });
       return;
     }
     const key = query.toLowerCase();
     if (seen.has(key)) {
       removed += 1;
+      removedRows.push({
+        id: row.__rowId || removed,
+        query,
+        reason: "本地硬清洗剔除：重复 Query。",
+      });
       return;
     }
     seen.add(key);
-    cleaned.push({ ...row, query });
+    const nextRow = { ...row, query };
+    cleaned.push(nextRow);
+    keptRows.push({
+      id: row.__rowId || cleaned.length,
+      query,
+      reason: "通过本地硬清洗，进入 Gemini 轻量打分。",
+    });
   });
 
   return {
     rows: cleaned,
     kept: cleaned.length,
     removed,
+    summary: `本地硬清洗完成：保留 ${cleaned.length} 条，剔除 ${removed} 条。`,
+    details: {
+      sourceRows: rows,
+      keptRows,
+      removedRows,
+    },
   };
 }
 
@@ -2113,21 +2175,13 @@ async function runScreening(rows) {
   await wait(550);
   if (runId !== state.runId) return;
   state.completedSteps.add("upload");
-  if (!state.crateSession) {
-    state.activeStep = null;
-    state.running = false;
-    els.runStatus.textContent = `请先连接 Crate。清洗、打分、主题聚类和标题输出都需要 ${AI_MODEL_ID} 执行。`;
-    render();
-    return;
-  }
 
   try {
-    setActiveStep("clean", `${AI_MODEL_ID} 正在清洗 query...`);
+    setActiveStep("clean", "正在本地硬清洗 query...");
     render();
-    const cleaned = await runGeminiCleanRows(rows, (batch, total) => {
-      setActiveStep("clean", `${AI_MODEL_ID} 正在清洗 query，第 ${batch}/${total} 批，每批最多 ${GEMINI_BATCH_SIZE} 行...`);
-      render();
-    });
+    await wait(150);
+    const sourceRows = rows.map((row, index) => ({ ...row, __rowId: index + 1, query: sanitizeQuery(row.query) }));
+    const cleaned = cleanQueryRows(sourceRows);
     if (runId !== state.runId) return;
     state.rows = cleaned.rows;
     state.cleanStats = { kept: cleaned.kept, removed: cleaned.removed };
@@ -2139,6 +2193,14 @@ async function runScreening(rows) {
       state.activeStep = null;
       state.running = false;
       els.runStatus.textContent = "清洗后没有可用 query。可以补充更完整的 query 内容后再运行。";
+      render();
+      return;
+    }
+
+    if (!state.crateSession) {
+      state.activeStep = null;
+      state.running = false;
+      els.runStatus.textContent = `本地清洗已完成。请先连接 Crate，打分、主题聚类和标题输出需要 ${AI_MODEL_ID} 执行。`;
       render();
       return;
     }
@@ -2235,7 +2297,7 @@ function renderAuth() {
     const userLabel = state.crateSession.user?.email || "authorized";
     els.authStatus.textContent = state.aiError
       ? `已连接 Crate：${userLabel}。上次 ${AI_MODEL_LABEL} JSON 步骤失败：${state.aiError}`
-      : `已连接 Crate：${userLabel}。清洗、打分、主题聚类和标题输出会逐步调用 ${AI_MODEL_LABEL}。`;
+      : `已连接 Crate：${userLabel}。本地清洗后，轻量打分、主题聚类和标题输出会逐步调用 ${AI_MODEL_LABEL}。`;
     els.aiModeBadge.textContent = `${AI_MODEL_LABEL} JSON`;
     els.aiModeBadge.classList.add("is-connected");
     els.connectCrateButton.textContent = "重新连接";
@@ -2318,7 +2380,7 @@ function buildProgressSteps() {
       ...baseSteps,
       upload: baseSteps.upload,
       clean: {
-        summary: state.activeStep === "clean" ? "正在清洗 query，等待结果生成..." : "等待清洗开始",
+        summary: state.activeStep === "clean" ? "正在本地硬清洗 query..." : "等待清洗开始",
         items: state.activeStep === "clean" ? ["Loading..."] : [],
       },
     };
@@ -2354,8 +2416,8 @@ function buildProgressSteps() {
   const scoreStep = {
     summary: `${scoringLabel} 最终平均优先级 ${avgPriority} 分。`,
     items: [
-      "核心价值 70%：User Need 25 / Content Gap 20 / UGC Potential 20 / Trend 5",
-      "可执行性 30%：Campaign Intent 10 / Expansion Potential 10 / Brand Safety 10",
+      "Gemini 轻量输出：User Need / Campaign Potential / Brand Safety",
+      "前端补算：Content Gap / Trend / Campaign Intent / Expansion，并合成最终分",
       `进入活动池 ${qualified.length} 条：强推 ${actionCounts["强推"] || 0} 条，可测 ${actionCounts["可测"] || 0} 条`,
       `主要类别：${topCategories.join(" / ")}`,
       `${AI_MODEL_LABEL} 已完成逐条 JSON 打分，风险或噪音 ${riskCount} 条`,
